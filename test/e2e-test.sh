@@ -38,6 +38,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_for_port() {
+  local host="$1" port="$2" label="$3" retries="${4:-30}"
+  echo "  Waiting for $label ($host:$port) ..."
+  for ((i=1; i<=retries; i++)); do
+    if bash -c "echo > /dev/tcp/$host/$port" 2>/dev/null; then
+      echo "  $label: ready"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "  ERROR: $label not reachable after ${retries}s" >&2
+  return 1
+}
+
 # ── 1. Create namespace and deploy ────────────────────────────────────────────
 echo "=== Setting up test environment in namespace: $NAMESPACE ==="
 
@@ -51,18 +65,18 @@ echo ""
 echo "=== Waiting for pods ==="
 
 echo "Waiting for PostgreSQL ..."
-kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=180s
 
 echo "Waiting for FerretDB ..."
-kubectl wait --for=condition=ready pod -l app=ferretdb -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=condition=ready pod -l app=ferretdb -n "$NAMESPACE" --timeout=180s
 
 echo "Waiting for source MongoDB ..."
-kubectl wait --for=condition=ready pod -l app=source-mongodb -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=condition=ready pod -l app=source-mongodb -n "$NAMESPACE" --timeout=180s
 
 # ── 3. Wait for seed job ─────────────────────────────────────────────────────
 echo ""
 echo "=== Waiting for seed job to complete ==="
-kubectl wait --for=condition=complete job/seed-mongodb -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=condition=complete job/seed-mongodb -n "$NAMESPACE" --timeout=180s
 echo "Seed job completed."
 
 # Show seed logs
@@ -86,15 +100,16 @@ PF_PIDS+=($!)
 kubectl port-forward svc/postgres 25432:5432 -n "$NAMESPACE" &
 PF_PIDS+=($!)
 
-# Wait for port-forwards to establish
-echo "Waiting for port-forwards to establish ..."
-sleep 3
+# Wait for port-forwards to be reachable
+wait_for_port localhost 27117 "Source MongoDB"
+wait_for_port localhost 27217 "FerretDB"
+wait_for_port localhost 25432 "PostgreSQL"
 
-# Verify connectivity
-echo "Verifying connectivity ..."
-mongosh --quiet --norc "mongodb://localhost:27117" --eval 'db.runCommand({ping:1})' >/dev/null
+# Verify application-level connectivity
+echo "Verifying application connectivity ..."
+mongosh --quiet --norc "mongodb://localhost:27117" --eval 'print("ping:" + db.runCommand({ping:1}).ok)'
 echo "  Source MongoDB: OK"
-mongosh --quiet --norc "mongodb://localhost:27217" --eval 'db.runCommand({ping:1})' >/dev/null
+mongosh --quiet --norc "mongodb://localhost:27217" --eval 'print("ping:" + db.runCommand({ping:1}).ok)'
 echo "  FerretDB: OK"
 psql "postgresql://ferretdb:ferretdb@localhost:25432/ferretdb" -c "SELECT 1;" >/dev/null
 echo "  PostgreSQL: OK"

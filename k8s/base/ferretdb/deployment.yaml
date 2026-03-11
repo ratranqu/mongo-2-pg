@@ -20,23 +20,17 @@ spec:
           ports:
             - containerPort: 27017
               name: mongo
-            - containerPort: 8088
-              name: debug
           env:
             - name: FERRETDB_POSTGRESQL_URL
               value: "postgres://ferretdb:ferretdb@postgres:5432/ferretdb"
-            - name: FERRETDB_DEBUG_ADDR
-              value: "0.0.0.0:8088"
           readinessProbe:
-            httpGet:
-              path: /debug/readyz
-              port: debug
+            tcpSocket:
+              port: mongo
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
-            httpGet:
-              path: /debug/livez
-              port: debug
+            tcpSocket:
+              port: mongo
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:

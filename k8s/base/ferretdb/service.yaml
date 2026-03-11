@@ -11,6 +11,3 @@ spec:
     - name: mongo
       port: 27017
       targetPort: mongo
-    - name: debug
-      port: 8088
-      targetPort: debug

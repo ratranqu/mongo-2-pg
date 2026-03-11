@@ -14,5 +14,5 @@ if [[ ! -d "$DUMP_PATH" ]]; then
 fi
 
 echo "Restoring database '$DB_NAME' into FerretDB ..."
-mongorestore --uri="$FERRETDB_URI" --nsInclude="${DB_NAME}.*" --drop --dir="$DUMP_DIR"
+mongorestore --uri="$FERRETDB_URI" --nsInclude="${DB_NAME}.*" --dir="$DUMP_DIR"
 echo "Restore complete for '$DB_NAME'"

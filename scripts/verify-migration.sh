@@ -24,8 +24,7 @@ for db in "${DATABASES[@]}"; do
 
   # Get collections from source
   COLLECTIONS=$(mongosh --quiet --norc "$SOURCE_URI" --eval "
-    use('$db');
-    db.getCollectionNames().forEach(c => print(c));
+    db.getSiblingDB('$db').getCollectionNames().forEach(c => print(c));
   ")
 
   if [[ -z "$COLLECTIONS" ]]; then
@@ -34,14 +33,17 @@ for db in "${DATABASES[@]}"; do
   fi
 
   while IFS= read -r coll; do
+    [[ -z "$coll" ]] && continue
     SRC_COUNT=$(mongosh --quiet --norc "$SOURCE_URI" --eval "
-      use('$db');
-      print(db.getCollection('$coll').countDocuments());
+      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
     ")
     DST_COUNT=$(mongosh --quiet --norc "$FERRETDB_URI" --eval "
-      use('$db');
-      print(db.getCollection('$coll').countDocuments());
+      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
     ")
+
+    # Trim whitespace
+    SRC_COUNT=$(echo "$SRC_COUNT" | tr -d '[:space:]')
+    DST_COUNT=$(echo "$DST_COUNT" | tr -d '[:space:]')
 
     if [[ "$SRC_COUNT" == "$DST_COUNT" ]]; then
       echo "  $db.$coll: OK ($SRC_COUNT documents)"

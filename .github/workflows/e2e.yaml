@@ -23,13 +23,15 @@ jobs:
 
       - name: Install MongoDB tools
         run: |
-          # Install mongosh via the mongodb repo
+          # Detect Ubuntu codename for apt source
           UBUNTU_CODENAME="$(lsb_release -cs)"
-          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
-            sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+          echo "Ubuntu codename: $UBUNTU_CODENAME"
 
-          echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] \
-            https://repo.mongodb.org/apt/ubuntu ${UBUNTU_CODENAME}/mongodb-org/8.0 multiverse" | \
+          # Import MongoDB GPG key
+          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
+            sudo gpg --yes --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+
+          echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu ${UBUNTU_CODENAME}/mongodb-org/8.0 multiverse" | \
             sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
 
           sudo apt-get update
@@ -62,16 +64,16 @@ jobs:
           kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' || true
           echo ""
           echo "=== FerretDB Logs ==="
-          kubectl logs -l app=ferretdb -n "$NAMESPACE" --tail=100 || true
+          kubectl logs -l app=ferretdb -n "$NAMESPACE" --tail=200 || true
           echo ""
           echo "=== PostgreSQL Logs ==="
-          kubectl logs -l app=postgres -n "$NAMESPACE" --tail=100 || true
+          kubectl logs -l app=postgres -n "$NAMESPACE" --tail=200 || true
           echo ""
           echo "=== Source MongoDB Logs ==="
-          kubectl logs -l app=source-mongodb -n "$NAMESPACE" --tail=100 || true
+          kubectl logs -l app=source-mongodb -n "$NAMESPACE" --tail=200 || true
           echo ""
           echo "=== Seed Job Logs ==="
-          kubectl logs job/seed-mongodb -n "$NAMESPACE" --all-containers --tail=100 || true
+          kubectl logs job/seed-mongodb -n "$NAMESPACE" --all-containers --tail=200 || true
 
       - name: Cleanup
         if: always()

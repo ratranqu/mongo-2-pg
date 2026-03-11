@@ -52,13 +52,13 @@ check_count() {
   local db="$1" coll="$2" expected="$3"
   local actual
   actual=$(mongosh --quiet --norc "$FERRETDB_URI" --eval "
-    use('$db');
-    print(db.getCollection('$coll').countDocuments());
+    print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
   ")
+  actual=$(echo "$actual" | tr -d '[:space:]')
   if [[ "$actual" == "$expected" ]]; then
     pass "$db.$coll: $actual documents (expected $expected)"
   else
-    fail "$db.$coll: got $actual documents, expected $expected"
+    fail "$db.$coll: got '$actual' documents, expected $expected"
   fi
 }
 
@@ -73,41 +73,38 @@ echo "=== Spot-checking document content ==="
 
 # Check Alice exists in testdb1.users
 ALICE=$(mongosh --quiet --norc "$FERRETDB_URI" --eval "
-  use('testdb1');
-  const doc = db.users.findOne({ name: 'Alice' });
+  const doc = db.getSiblingDB('testdb1').users.findOne({ name: 'Alice' });
   if (doc && doc.email === 'alice@example.com') print('OK');
   else print('MISSING');
-")
+" | tr -d '[:space:]')
 if [[ "$ALICE" == "OK" ]]; then
   pass "testdb1.users: Alice document found with correct email"
 else
-  fail "testdb1.users: Alice document missing or has wrong email"
+  fail "testdb1.users: Alice document missing or has wrong email (got: '$ALICE')"
 fi
 
 # Check Widget exists in testdb2.products
 WIDGET=$(mongosh --quiet --norc "$FERRETDB_URI" --eval "
-  use('testdb2');
-  const doc = db.products.findOne({ sku: 'WDG-001' });
+  const doc = db.getSiblingDB('testdb2').products.findOne({ sku: 'WDG-001' });
   if (doc && doc.name === 'Widget') print('OK');
   else print('MISSING');
-")
+" | tr -d '[:space:]')
 if [[ "$WIDGET" == "OK" ]]; then
   pass "testdb2.products: Widget document found with correct name"
 else
-  fail "testdb2.products: Widget document missing or has wrong name"
+  fail "testdb2.products: Widget document missing or has wrong name (got: '$WIDGET')"
 fi
 
 # Check nested document in testdb1.orders
 ORDER=$(mongosh --quiet --norc "$FERRETDB_URI" --eval "
-  use('testdb1');
-  const doc = db.orders.findOne({ user: 'Alice' });
+  const doc = db.getSiblingDB('testdb1').orders.findOne({ user: 'Alice' });
   if (doc && doc.items && doc.items.length === 2 && doc.total === 44.48) print('OK');
   else print('MISSING');
-")
+" | tr -d '[:space:]')
 if [[ "$ORDER" == "OK" ]]; then
   pass "testdb1.orders: Alice order found with nested items and correct total"
 else
-  fail "testdb1.orders: Alice order missing or has wrong structure"
+  fail "testdb1.orders: Alice order missing or has wrong structure (got: '$ORDER')"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
