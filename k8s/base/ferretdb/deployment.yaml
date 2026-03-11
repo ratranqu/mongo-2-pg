@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferretdb
+  labels:
+    app: ferretdb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ferretdb
+  template:
+    metadata:
+      labels:
+        app: ferretdb
+    spec:
+      containers:
+        - name: ferretdb
+          image: ghcr.io/ferretdb/ferretdb:1.24.0
+          ports:
+            - containerPort: 27017
+              name: mongo
+            - containerPort: 8088
+              name: debug
+          env:
+            - name: FERRETDB_POSTGRESQL_URL
+              value: "postgres://ferretdb:ferretdb@postgres:5432/ferretdb"
+          readinessProbe:
+            httpGet:
+              path: /debug/serverStatus
+              port: debug
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /debug/serverStatus
+              port: debug
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

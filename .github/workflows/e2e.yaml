@@ -1,0 +1,78 @@
+name: End-to-End Migration Test
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: mongo2pg-test
+
+      - name: Install MongoDB tools
+        run: |
+          # Import MongoDB public GPG key and add repo
+          curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | \
+            sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg
+
+          echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] \
+            https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | \
+            sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+
+          sudo apt-get update
+          sudo apt-get install -y mongodb-mongosh mongodb-database-tools
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get install -y postgresql-client
+
+      - name: Verify tools
+        run: |
+          mongosh --version
+          mongodump --version
+          mongorestore --version
+          psql --version
+          kubectl version --client
+
+      - name: Run end-to-end test
+        run: |
+          ./test/e2e-test.sh --no-cleanup
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          NAMESPACE="mongo2pg-test"
+          echo "=== Pod Status ==="
+          kubectl get pods -n "$NAMESPACE" -o wide || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' || true
+          echo ""
+          echo "=== FerretDB Logs ==="
+          kubectl logs -l app=ferretdb -n "$NAMESPACE" --tail=100 || true
+          echo ""
+          echo "=== PostgreSQL Logs ==="
+          kubectl logs -l app=postgres -n "$NAMESPACE" --tail=100 || true
+          echo ""
+          echo "=== Source MongoDB Logs ==="
+          kubectl logs -l app=source-mongodb -n "$NAMESPACE" --tail=100 || true
+          echo ""
+          echo "=== Seed Job Logs ==="
+          kubectl logs job/seed-mongodb -n "$NAMESPACE" --all-containers --tail=100 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kubectl delete namespace mongo2pg-test --ignore-not-found --wait=false || true

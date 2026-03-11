@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: source-mongodb
+  labels:
+    app: source-mongodb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: source-mongodb
+  template:
+    metadata:
+      labels:
+        app: source-mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+              name: mongo
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
