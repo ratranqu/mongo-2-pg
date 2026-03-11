@@ -160,3 +160,47 @@ After any migration, you can validate the PostgreSQL state independently:
 ```
 
 This checks that PostgreSQL schemas exist and document counts and content match expectations.
+
+## Limitations
+
+This migration relies on [FerretDB 1.x](https://docs.ferretdb.io/) as the MongoDB-compatible interface to PostgreSQL. While FerretDB covers core MongoDB functionality, it is **not a complete drop-in replacement**. Applications should be tested against FerretDB before cutting over. Key limitations include:
+
+### Unsupported features
+
+- **Transactions and sessions**: Multi-document transactions (`startTransaction`, `commitTransaction`, `abortTransaction`) and session commands are not implemented. Applications relying on ACID transactions across multiple documents will not work.
+- **Change streams**: `$changeStream` is not supported. Applications using `watch()` for real-time notifications will need an alternative (e.g., PostgreSQL `LISTEN`/`NOTIFY`).
+- **Replication and sharding**: Replica set and sharding commands are not implemented. FerretDB runs as a single proxy instance; high availability must be handled at the PostgreSQL and Kubernetes level.
+
+### Aggregation pipeline
+
+FerretDB supports basic aggregation stages (`$match`, `$project`, `$group`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`) but **many advanced stages are missing**:
+
+- Not supported: `$lookup` (joins), `$graphLookup`, `$facet`, `$merge`, `$out`, `$unionWith`, `$bucket`, `$bucketAuto`, `$setWindowFields`
+- Most aggregation expression operators are unimplemented: only `$sum` and `$count` accumulators work in `$group`. Arithmetic (`$add`, `$multiply`), string (`$concat`, `$substr`), date (`$dateToString`, `$year`), array (`$arrayElemAt`, `$filter`), conditional (`$cond`, `$ifNull`), and type operators are not available.
+
+### Query and update operators
+
+- **Queries**: Core operators (`$eq`, `$gt`, `$lt`, `$in`, `$exists`, `$regex`, `$elemMatch`, etc.) are supported. Bitwise query operators and `$jsonSchema` are not.
+- **Updates**: Field operators (`$set`, `$unset`, `$inc`, `$rename`, `$push`, `$pull`, `$addToSet`, `$pop`) work. Positional array operators (`$`, `$[]`, `$[<identifier>]`) have known issues. Array filters (`arrayFilters`) are not supported.
+- **Collation**: The `collation` option is ignored on all commands. String sorting and comparison follow PostgreSQL's default behavior rather than MongoDB's locale-aware collation.
+
+### Indexes
+
+- Basic single-field and compound indexes are supported.
+- **Not supported**: text indexes, geospatial indexes (`2d`, `2dsphere`), hashed indexes, wildcard indexes, and partial indexes (`partialFilterExpression`). Applications using `$text`, `$near`, `$geoWithin`, or other geo queries will not work.
+
+### Data type caveats
+
+- Documents are stored as JSONB in PostgreSQL, which means BSON-specific types (Decimal128, MinKey/MaxKey, regular expressions as values) may lose fidelity or behave differently.
+- Collection names must be valid UTF-8 (MongoDB allows invalid UTF-8 sequences).
+- Error messages may differ from MongoDB even when error codes match.
+
+### Performance
+
+- FerretDB translates MongoDB wire protocol to SQL at runtime. For read-heavy workloads, queries that would use a MongoDB-specific index (text, geo, hashed) will fall back to sequential scans.
+- Complex aggregation pipelines that MongoDB would execute natively must be processed by FerretDB's translation layer, which may be significantly slower.
+- Write-heavy workloads may see different throughput characteristics due to PostgreSQL's MVCC model vs. MongoDB's WiredTiger engine.
+
+### Recommendation
+
+Before migrating production workloads, use FerretDB's [pre-migration testing](https://docs.ferretdb.io/migration/premigration-testing/) mode to proxy traffic to both MongoDB and FerretDB simultaneously. This will surface any `NotImplemented` errors for operations your application uses. Alternatively, run your application's test suite against FerretDB to identify incompatibilities.
