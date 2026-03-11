@@ -44,7 +44,7 @@ spec:
               memory: 512Mi
           volumeMounts:
             - name: pgdata
-              mountPath: /var/lib/postgresql/data
+              mountPath: /var/lib/postgresql
       volumes:
         - name: pgdata
           emptyDir: {}
