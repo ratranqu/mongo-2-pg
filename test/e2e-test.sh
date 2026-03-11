@@ -25,7 +25,7 @@ cleanup() {
   echo "=== Cleaning up ==="
 
   # Kill port-forwards
-  for pid in "${PF_PIDS[@]}"; do
+  for pid in "${PF_PIDS[@]+"${PF_PIDS[@]}"}"; do
     kill "$pid" 2>/dev/null || true
   done
 
@@ -58,25 +58,32 @@ echo "=== Setting up test environment in namespace: $NAMESPACE ==="
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
 # Apply test manifests with kustomize
+echo "Applying kustomize manifests ..."
 kubectl apply -k "$PROJECT_DIR/k8s/test/" -n "$NAMESPACE"
+
+echo "Resources applied. Current state:"
+kubectl get all -n "$NAMESPACE" 2>/dev/null || true
 
 # ── 2. Wait for pods to be ready ─────────────────────────────────────────────
 echo ""
 echo "=== Waiting for pods ==="
 
 echo "Waiting for PostgreSQL ..."
-kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=180s
-
-echo "Waiting for FerretDB ..."
-kubectl wait --for=condition=ready pod -l app=ferretdb -n "$NAMESPACE" --timeout=180s
+kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=300s
 
 echo "Waiting for source MongoDB ..."
-kubectl wait --for=condition=ready pod -l app=source-mongodb -n "$NAMESPACE" --timeout=180s
+kubectl wait --for=condition=ready pod -l app=source-mongodb -n "$NAMESPACE" --timeout=300s
+
+echo "Waiting for FerretDB ..."
+kubectl wait --for=condition=ready pod -l app=ferretdb -n "$NAMESPACE" --timeout=300s
+
+echo "All pods ready:"
+kubectl get pods -n "$NAMESPACE"
 
 # ── 3. Wait for seed job ─────────────────────────────────────────────────────
 echo ""
 echo "=== Waiting for seed job to complete ==="
-kubectl wait --for=condition=complete job/seed-mongodb -n "$NAMESPACE" --timeout=180s
+kubectl wait --for=condition=complete job/seed-mongodb -n "$NAMESPACE" --timeout=300s
 echo "Seed job completed."
 
 # Show seed logs

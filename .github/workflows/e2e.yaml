@@ -48,6 +48,18 @@ jobs:
           mongorestore --version
           psql --version
           kubectl version --client
+          kubectl get nodes
+
+      - name: Pre-pull images into kind
+        run: |
+          # Pre-pull images to avoid timeout issues
+          echo "Loading images into kind cluster ..."
+          for img in postgres:18 mongo:7 "ghcr.io/ferretdb/ferretdb:1.24.2"; do
+            echo "  Pulling $img ..."
+            docker pull "$img"
+            kind load docker-image "$img" --name mongo2pg-test
+          done
+          echo "All images loaded."
 
       - name: Run end-to-end test
         run: |
@@ -57,20 +69,23 @@ jobs:
         if: failure()
         run: |
           NAMESPACE="mongo2pg-test"
-          echo "=== Pod Status ==="
-          kubectl get pods -n "$NAMESPACE" -o wide || true
+          echo "=== All Resources ==="
+          kubectl get all -n "$NAMESPACE" -o wide || true
+          echo ""
+          echo "=== Pod Descriptions ==="
+          kubectl describe pods -n "$NAMESPACE" || true
           echo ""
           echo "=== Events ==="
           kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' || true
           echo ""
           echo "=== FerretDB Logs ==="
-          kubectl logs -l app=ferretdb -n "$NAMESPACE" --tail=200 || true
+          kubectl logs -l app=ferretdb -n "$NAMESPACE" --all-containers --tail=200 || true
           echo ""
           echo "=== PostgreSQL Logs ==="
-          kubectl logs -l app=postgres -n "$NAMESPACE" --tail=200 || true
+          kubectl logs -l app=postgres -n "$NAMESPACE" --all-containers --tail=200 || true
           echo ""
           echo "=== Source MongoDB Logs ==="
-          kubectl logs -l app=source-mongodb -n "$NAMESPACE" --tail=200 || true
+          kubectl logs -l app=source-mongodb -n "$NAMESPACE" --all-containers --tail=200 || true
           echo ""
           echo "=== Seed Job Logs ==="
           kubectl logs job/seed-mongodb -n "$NAMESPACE" --all-containers --tail=200 || true
