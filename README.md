@@ -34,14 +34,11 @@ mongo-2-pg/
 │   ├── restore-database.sh           # Restore a single database to FerretDB
 │   └── verify-migration.sh           # Verify document counts match
 ├── k8s/
-│   ├── base/                         # Kustomize base: FerretDB deployment
-│   │   └── ferretdb/
-│   │       ├── deployment.yaml
-│   │       ├── service.yaml
-│   │       └── kustomization.yaml
+│   ├── base/
+│   │   ├── ferretdb/                 #   FerretDB deployment (reads Secret)
+│   │   └── postgres/                 #   Bundled PostgreSQL + default Secret
 │   └── test/                         # Kustomize overlay: full test environment
 │       ├── mongodb/                  #   Source MongoDB
-│       ├── postgres/                 #   PostgreSQL 18
 │       └── seed/                     #   Seed job with test data
 ├── test/
 │   ├── e2e-test.sh                   # End-to-end test (assumes k8s cluster)
@@ -54,16 +51,35 @@ mongo-2-pg/
 
 ### 1. Deploy FerretDB
 
-FerretDB must be running and connected to your target PostgreSQL database. The Kustomize base provides a ready-to-use deployment:
+FerretDB must be running and connected to your target PostgreSQL database. The Kustomize base deploys FerretDB only — it reads PostgreSQL connection details from a Kubernetes Secret named `ferretdb-postgres`.
+
+**Option A: Bundled PostgreSQL** (quick start)
+
+Deploy FerretDB together with a bundled PostgreSQL instance and default credentials:
 
 ```bash
-# Review and customize the PostgreSQL connection URL in
-# k8s/base/ferretdb/deployment.yaml (FERRETDB_POSTGRESQL_URL env var),
-# then deploy:
+kubectl apply -k k8s/base/
+kubectl apply -k k8s/base/postgres/
+```
+
+This creates a PostgreSQL deployment with default credentials (`ferretdb:ferretdb`) and the matching Secret.
+
+**Option B: External PostgreSQL** (production)
+
+If you already have a PostgreSQL instance, create the Secret with your own connection details:
+
+```bash
+kubectl create secret generic ferretdb-postgres \
+  --from-literal=POSTGRES_HOST=my-postgres.example.com \
+  --from-literal=POSTGRES_PORT=5432 \
+  --from-literal=POSTGRES_DB=ferretdb \
+  --from-literal=POSTGRES_USER=myuser \
+  --from-literal=POSTGRES_PASSWORD=mypassword
+
 kubectl apply -k k8s/base/
 ```
 
-The default connection URL is `postgres://ferretdb:ferretdb@postgres:5432/ferretdb`. Update it to point to your PostgreSQL instance.
+The Secret must contain these keys: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`. FerretDB constructs its connection URL from these values.
 
 ### 2. Run the Migration
 
