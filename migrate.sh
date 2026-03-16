@@ -52,7 +52,10 @@ done
 
 # ── List databases ────────────────────────────────────────────────────────────
 echo "=== Discovering databases on source MongoDB ==="
-mapfile -t DATABASES < <("$SCRIPT_DIR/scripts/list-databases.sh" "$SOURCE_MONGO")
+DATABASES=()
+while IFS= read -r _db; do
+  [[ -n "$_db" ]] && DATABASES+=("$_db")
+done < <("$SCRIPT_DIR/scripts/list-databases.sh" "$SOURCE_MONGO")
 
 if [[ ${#DATABASES[@]} -eq 0 ]]; then
   echo "No user databases found on source. Nothing to migrate."

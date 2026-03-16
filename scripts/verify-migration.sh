@@ -14,7 +14,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [[ $# -gt 0 ]]; then
   DATABASES=("$@")
 else
-  mapfile -t DATABASES < <("$SCRIPT_DIR/list-databases.sh" "$SOURCE_URI")
+  DATABASES=()
+  while IFS= read -r _db; do
+    [[ -n "$_db" ]] && DATABASES+=("$_db")
+  done < <("$SCRIPT_DIR/list-databases.sh" "$SOURCE_URI")
 fi
 
 ERRORS=0
