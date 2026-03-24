@@ -2,7 +2,7 @@
 # Migrate all non-system databases from a MongoDB server to PostgreSQL via FerretDB.
 #
 # Usage:
-#   migrate.sh --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--skip-verify]
+#   migrate.sh --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--databases <db1,db2,...>] [--skip-verify]
 #
 # The FerretDB instance must already be running and connected to the target PostgreSQL.
 # --target-postgres is informational/optional (used for direct PG verification if desired).
@@ -13,10 +13,11 @@ DUMP_DIR=""
 SOURCE_MONGO=""
 FERRETDB=""
 TARGET_POSTGRES=""
+ONLY_DATABASES=""
 SKIP_VERIFY=false
 
 usage() {
-  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--skip-verify]"
+  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--databases <db1,db2,...>] [--skip-verify]"
   exit 1
 }
 
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --source-mongo)  SOURCE_MONGO="$2";   shift 2 ;;
     --ferretdb)      FERRETDB="$2";       shift 2 ;;
     --target-postgres) TARGET_POSTGRES="$2"; shift 2 ;;
+    --databases)     ONLY_DATABASES="$2";  shift 2 ;;
     --skip-verify)   SKIP_VERIFY=true;    shift ;;
     *)               usage ;;
   esac
@@ -63,6 +65,32 @@ if [[ ${#DATABASES[@]} -eq 0 ]]; then
 fi
 
 echo "Found ${#DATABASES[@]} database(s): ${DATABASES[*]}"
+
+# ── Filter databases if --databases was specified ────────────────────────────
+if [[ -n "$ONLY_DATABASES" ]]; then
+  IFS=',' read -ra REQUESTED <<< "$ONLY_DATABASES"
+  FILTERED=()
+  for req in "${REQUESTED[@]}"; do
+    req="$(echo "$req" | xargs)"  # trim whitespace
+    found=false
+    for db in "${DATABASES[@]}"; do
+      if [[ "$db" == "$req" ]]; then
+        FILTERED+=("$req")
+        found=true
+        break
+      fi
+    done
+    if [[ "$found" == "false" ]]; then
+      echo "WARNING: Requested database '$req' not found on source, skipping." >&2
+    fi
+  done
+  DATABASES=("${FILTERED[@]}")
+  if [[ ${#DATABASES[@]} -eq 0 ]]; then
+    echo "No matching databases to migrate."
+    exit 0
+  fi
+  echo "Filtered to ${#DATABASES[@]} database(s): ${DATABASES[*]}"
+fi
 
 # ── Dump & Restore ────────────────────────────────────────────────────────────
 DUMP_DIR=$(mktemp -d -t mongo-dump-XXXXXX)
