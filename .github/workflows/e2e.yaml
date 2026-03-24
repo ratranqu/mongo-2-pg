@@ -54,7 +54,7 @@ jobs:
         run: |
           # Pre-pull images to avoid timeout issues
           echo "Loading images into kind cluster ..."
-          for img in postgres:18 mongo:7 "ghcr.io/ferretdb/ferretdb:1.24.2"; do
+          for img in "ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0" postgres:17 mongo:7 "ghcr.io/ferretdb/ferretdb:2.7.0"; do
             echo "  Pulling $img ..."
             docker pull "$img"
             kind load docker-image "$img" --name mongo2pg-test

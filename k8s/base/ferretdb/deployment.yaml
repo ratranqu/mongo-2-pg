@@ -16,7 +16,7 @@ spec:
     spec:
       initContainers:
         - name: wait-for-postgres
-          image: postgres:18
+          image: postgres:17
           command:
             - sh
             - -c
@@ -44,7 +44,7 @@ spec:
                   key: POSTGRES_USER
       containers:
         - name: ferretdb
-          image: ghcr.io/ferretdb/ferretdb:1.24.2
+          image: ghcr.io/ferretdb/ferretdb:2.7.0
           ports:
             - containerPort: 27017
               name: mongo
