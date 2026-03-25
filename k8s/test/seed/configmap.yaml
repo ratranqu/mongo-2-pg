@@ -11,49 +11,163 @@ data:
     const db1 = db.getSiblingDB("testdb1");
 
     db1.users.insertMany([
-      { name: "Alice", email: "alice@example.com", age: 30, tags: ["admin", "active"] },
-      { name: "Bob",   email: "bob@example.com",   age: 25, tags: ["user"] },
-      { name: "Carol", email: "carol@example.com", age: 35, tags: ["user", "active"] },
+      {
+        name: "Alice", email: "alice@example.com", age: 30,
+        tags: ["admin", "active"],
+        addresses: [
+          { type: "home",  city: "Portland", zip: "97201", coords: [45.5152, -122.6784] },
+          { type: "work",  city: "Seattle",  zip: "98101", coords: [47.6062, -122.3321] },
+        ],
+        preferences: {
+          notifications: { email: true, sms: false, channels: ["billing", "security"] },
+          theme: "dark",
+        },
+      },
+      {
+        name: "Bob", email: "bob@example.com", age: 25,
+        tags: ["user"],
+        addresses: [
+          { type: "home", city: "Austin", zip: "73301", coords: [30.2672, -97.7431] },
+        ],
+        preferences: {
+          notifications: { email: false, sms: true, channels: ["marketing"] },
+          theme: "light",
+        },
+      },
+      {
+        name: "Carol", email: "carol@example.com", age: 35,
+        tags: ["user", "active"],
+        addresses: [],
+        preferences: {
+          notifications: { email: true, sms: true, channels: [] },
+          theme: "system",
+        },
+      },
     ]);
 
     db1.orders.insertMany([
       {
         user: "Alice",
         items: [
-          { product: "Widget", qty: 2, price: 9.99 },
-          { product: "Gadget", qty: 1, price: 24.50 },
+          {
+            product: "Widget", qty: 2, price: 9.99,
+            options: [
+              { name: "color", values: ["red", "blue"] },
+              { name: "size",  values: ["M"] },
+            ],
+          },
+          {
+            product: "Gadget", qty: 1, price: 24.50,
+            options: [],
+          },
         ],
         total: 44.48,
         status: "shipped",
+        tags: ["priority", "gift-wrap"],
+        shipping: {
+          address: { city: "Portland", zip: "97201" },
+          history: [
+            { status: "packed",    at: new Date("2025-01-15T10:00:00Z") },
+            { status: "in_transit", at: new Date("2025-01-16T08:30:00Z") },
+            { status: "delivered", at: new Date("2025-01-17T14:00:00Z") },
+          ],
+        },
         createdAt: new Date("2025-01-15"),
       },
       {
         user: "Bob",
         items: [
-          { product: "Gadget", qty: 3, price: 24.50 },
+          {
+            product: "Gadget", qty: 3, price: 24.50,
+            options: [
+              { name: "color", values: ["black"] },
+            ],
+          },
         ],
         total: 73.50,
         status: "pending",
+        tags: [],
+        shipping: {
+          address: { city: "Austin", zip: "73301" },
+          history: [],
+        },
         createdAt: new Date("2025-02-01"),
       },
     ]);
 
-    print("testdb1 seeded: " + db1.users.countDocuments() + " users, " + db1.orders.countDocuments() + " orders");
+    // ── Collection: testdb1.matrices — nested arrays (array of arrays) ──
+    db1.matrices.insertMany([
+      {
+        name: "identity-3x3",
+        data: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        labels: [["r1c1", "r1c2", "r1c3"], ["r2c1", "r2c2", "r2c3"]],
+        metadata: { dimensions: [3, 3], tags: ["math", "linear-algebra"] },
+      },
+      {
+        name: "sample-2x3",
+        data: [[1.5, 2.5, 3.5], [4.5, 5.5, 6.5]],
+        labels: [],
+        metadata: { dimensions: [2, 3], tags: ["test"] },
+      },
+    ]);
+
+    print(
+      "testdb1 seeded: "
+      + db1.users.countDocuments() + " users, "
+      + db1.orders.countDocuments() + " orders, "
+      + db1.matrices.countDocuments() + " matrices"
+    );
 
     // ── Database 2: testdb2 ──────────────────────────────────────────────────────
 
     const db2 = db.getSiblingDB("testdb2");
 
     db2.products.insertMany([
-      { name: "Widget",  sku: "WDG-001", price: 9.99,  inStock: true  },
-      { name: "Gadget",  sku: "GDG-002", price: 24.50, inStock: true  },
-      { name: "Sprocket", sku: "SPR-003", price: 5.75,  inStock: false },
-      { name: "Doohickey", sku: "DHK-004", price: 15.00, inStock: true  },
+      {
+        name: "Widget", sku: "WDG-001", price: 9.99, inStock: true,
+        variants: [
+          { color: "red",  sizes: ["S", "M", "L"],  inventory: [10, 25, 5] },
+          { color: "blue", sizes: ["M", "L"],        inventory: [15, 8] },
+        ],
+        relatedSkus: ["GDG-002", "SPR-003"],
+      },
+      {
+        name: "Gadget", sku: "GDG-002", price: 24.50, inStock: true,
+        variants: [
+          { color: "black", sizes: ["One-Size"], inventory: [100] },
+        ],
+        relatedSkus: ["WDG-001"],
+      },
+      {
+        name: "Sprocket", sku: "SPR-003", price: 5.75, inStock: false,
+        variants: [],
+        relatedSkus: [],
+      },
+      {
+        name: "Doohickey", sku: "DHK-004", price: 15.00, inStock: true,
+        variants: [
+          { color: "silver", sizes: ["S", "M"], inventory: [30, 20] },
+        ],
+        relatedSkus: ["SPR-003"],
+      },
     ]);
 
     db2.categories.insertMany([
-      { name: "Electronics", description: "Electronic components and devices" },
-      { name: "Hardware",    description: "Nuts, bolts, and mechanical parts"  },
+      {
+        name: "Electronics",
+        description: "Electronic components and devices",
+        subcategories: [
+          { name: "Sensors",    tags: ["IoT", "analog"] },
+          { name: "Connectors", tags: ["USB", "HDMI", "audio"] },
+        ],
+      },
+      {
+        name: "Hardware",
+        description: "Nuts, bolts, and mechanical parts",
+        subcategories: [
+          { name: "Fasteners", tags: ["bolts", "screws", "nuts"] },
+        ],
+      },
     ]);
 
     print("testdb2 seeded: " + db2.products.countDocuments() + " products, " + db2.categories.countDocuments() + " categories");
