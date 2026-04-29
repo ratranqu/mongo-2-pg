@@ -10,6 +10,7 @@ spec:
       initContainers:
         - name: wait-for-mongodb
           image: mongo:7
+          imagePullPolicy: IfNotPresent
           command:
             - bash
             - -c
@@ -22,6 +23,7 @@ spec:
       containers:
         - name: seed
           image: mongo:7
+          imagePullPolicy: IfNotPresent
           command:
             - mongosh
             - mongodb://source-mongodb:27017

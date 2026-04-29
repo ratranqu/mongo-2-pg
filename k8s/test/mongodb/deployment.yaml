@@ -17,6 +17,7 @@ spec:
       containers:
         - name: mongodb
           image: mongo:7
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 27017
               name: mongo

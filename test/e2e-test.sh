@@ -68,8 +68,8 @@ kubectl get all -n "$NAMESPACE" 2>/dev/null || true
 echo ""
 echo "=== Waiting for pods ==="
 
-echo "Waiting for PostgreSQL ..."
-kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=300s
+echo "Waiting for PostgreSQL (DocumentDB extension init can be slow) ..."
+kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=600s
 
 echo "Waiting for source MongoDB ..."
 kubectl wait --for=condition=ready pod -l app=source-mongodb -n "$NAMESPACE" --timeout=300s
@@ -116,9 +116,9 @@ wait_for_port localhost 25432 "PostgreSQL"
 echo "Verifying application connectivity ..."
 mongosh --quiet --norc "mongodb://localhost:27117" --eval 'print("ping:" + db.runCommand({ping:1}).ok)'
 echo "  Source MongoDB: OK"
-mongosh --quiet --norc "mongodb://localhost:27217" --eval 'print("ping:" + db.runCommand({ping:1}).ok)'
+mongosh --quiet --norc "mongodb://ferretdb:ferretdb@localhost:27217" --eval 'print("ping:" + db.runCommand({ping:1}).ok)'
 echo "  FerretDB: OK"
-psql "postgresql://ferretdb:ferretdb@localhost:25432/ferretdb" -c "SELECT 1;" >/dev/null
+psql "postgresql://ferretdb:ferretdb@localhost:25432/postgres" -c "SELECT 1;" >/dev/null
 echo "  PostgreSQL: OK"
 
 # ── 5. Run migration ─────────────────────────────────────────────────────────
@@ -127,16 +127,16 @@ echo "=== Running migration ==="
 
 "$PROJECT_DIR/migrate.sh" \
   --source-mongo "mongodb://localhost:27117" \
-  --ferretdb "mongodb://localhost:27217" \
-  --target-postgres "postgresql://ferretdb:ferretdb@localhost:25432/ferretdb"
+  --ferretdb "mongodb://ferretdb:ferretdb@localhost:27217" \
+  --target-postgres "postgresql://ferretdb:ferretdb@localhost:25432/postgres"
 
 # ── 6. Validate results ──────────────────────────────────────────────────────
 echo ""
 echo "=== Validating results ==="
 
 "$SCRIPT_DIR/validate.sh" \
-  "postgresql://ferretdb:ferretdb@localhost:25432/ferretdb" \
-  "mongodb://localhost:27217"
+  "postgresql://ferretdb:ferretdb@localhost:25432/postgres" \
+  "mongodb://ferretdb:ferretdb@localhost:27217"
 
 echo ""
 echo "============================================"

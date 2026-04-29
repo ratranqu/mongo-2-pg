@@ -4,7 +4,7 @@
 # Usage: validate.sh <postgres-uri> <ferretdb-uri>
 #
 # Checks:
-#   1. PostgreSQL has schemas for testdb1 and testdb2
+#   1. PostgreSQL has DocumentDB catalog entries for testdb1 and testdb2
 #   2. FerretDB returns correct document counts per collection
 #   3. Spot-check: sample document content via FerretDB
 set -euo pipefail
@@ -23,25 +23,25 @@ pass() {
   echo "PASS: $1"
 }
 
-# ── 1. Check PostgreSQL schemas exist ─────────────────────────────────────────
-echo "=== Checking PostgreSQL schemas ==="
+# ── 1. Check PostgreSQL has DocumentDB data for our databases ────────────────
+echo "=== Checking PostgreSQL (DocumentDB catalog) ==="
 
-SCHEMAS=$(psql "$PG_URI" -t -A -c "
-  SELECT schema_name FROM information_schema.schemata
-  WHERE schema_name IN ('testdb1', 'testdb2')
-  ORDER BY schema_name;
+DB_LIST=$(psql "$PG_URI" -t -A -c "
+  SELECT DISTINCT database_name FROM documentdb_api_catalog.collections
+  WHERE database_name IN ('testdb1', 'testdb2')
+  ORDER BY database_name;
 ")
 
-if echo "$SCHEMAS" | grep -q "testdb1"; then
-  pass "Schema 'testdb1' exists in PostgreSQL"
+if echo "$DB_LIST" | grep -q "testdb1"; then
+  pass "Database 'testdb1' exists in DocumentDB catalog"
 else
-  fail "Schema 'testdb1' not found in PostgreSQL"
+  fail "Database 'testdb1' not found in DocumentDB catalog"
 fi
 
-if echo "$SCHEMAS" | grep -q "testdb2"; then
-  pass "Schema 'testdb2' exists in PostgreSQL"
+if echo "$DB_LIST" | grep -q "testdb2"; then
+  pass "Database 'testdb2' exists in DocumentDB catalog"
 else
-  fail "Schema 'testdb2' not found in PostgreSQL"
+  fail "Database 'testdb2' not found in DocumentDB catalog"
 fi
 
 # ── 2. Check document counts via FerretDB ─────────────────────────────────────

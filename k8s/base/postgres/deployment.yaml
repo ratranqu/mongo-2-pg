@@ -17,6 +17,7 @@ spec:
       containers:
         - name: postgres
           image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432
               name: postgres
@@ -36,17 +37,29 @@ spec:
                 secretKeyRef:
                   name: ferretdb-postgres
                   key: POSTGRES_PASSWORD
+          startupProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - ferretdb
+                - -d
+                - postgres
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             exec:
               command:
                 - pg_isready
                 - -U
                 - ferretdb
+                - -d
+                - postgres
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:
             - name: pgdata
-              mountPath: /var/lib/postgresql
+              mountPath: /var/lib/postgresql/data
       volumes:
         - name: pgdata
           emptyDir: {}
