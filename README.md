@@ -28,6 +28,7 @@ Source MongoDB ──mongodump──► local dump ──mongorestore──► F
 ```
 mongo-2-pg/
 ├── migrate.sh                        # Main migration script
+├── Dockerfile                        # Migration toolbox image
 ├── scripts/
 │   ├── list-databases.sh             # List non-system databases on source
 │   ├── dump-database.sh              # Dump a single database
@@ -42,9 +43,70 @@ mongo-2-pg/
 │       └── seed/                     #   Seed job with test data
 ├── test/
 │   ├── e2e-test.sh                   # End-to-end test (assumes k8s cluster)
-│   └── validate.sh                   # Validate schemas and document content
+│   ├── validate.sh                   # Validate schemas and document content
+│   └── benchmark.sh                  # Performance comparison (MongoDB vs FerretDB)
 └── .github/workflows/
     └── e2e.yaml                      # CI: kind cluster + full e2e test
+```
+
+## Docker Image (Migration Toolbox)
+
+The included `Dockerfile` builds a self-contained migration toolbox image based on Ubuntu 24.04. It bundles everything you need to run a migration from inside a Kubernetes cluster without installing tools on your local machine.
+
+### What's included
+
+| Category | Tools |
+|---|---|
+| **Database** | `mongosh`, `mongodump`, `mongorestore` (MongoDB 8.0), `psql` (PostgreSQL client) |
+| **Kubernetes** | `kubectl` |
+| **Network/debug** | `curl`, `wget`, `httpie`, `dig`, `ping`, `traceroute`, `mtr`, `nc`, `nmap`, `tcpdump`, `ss`, `ip` |
+| **Editors** | `vim`, `nano` |
+| **System** | `htop`, `strace`, `jq`, `yq`, `git`, `make` |
+| **Shells** | `bash`, `zsh` |
+
+The migration scripts are copied to `/opt/mongo-2-pg/` and added to `PATH`, so `migrate.sh` and the individual scripts under `scripts/` are directly available.
+
+### Build the image
+
+```bash
+docker build -t mongo-2-pg .
+```
+
+### Run a migration from a Kubernetes pod
+
+```bash
+# Launch a one-shot pod in the cluster
+kubectl run migration --image=mongo-2-pg --restart=Never --rm -it -- bash
+
+# Inside the pod, run the migration
+migrate.sh \
+  --source-mongo "mongodb://source-mongodb:27017" \
+  --ferretdb "mongodb://ferretdb:27017"
+```
+
+Or run non-interactively:
+
+```bash
+kubectl run migration \
+  --image=mongo-2-pg \
+  --restart=Never \
+  --rm -it \
+  -- migrate.sh \
+    --source-mongo "mongodb://source-mongodb:27017" \
+    --ferretdb "mongodb://ferretdb:27017"
+```
+
+### Using with a private registry
+
+```bash
+# Tag and push to your registry
+docker tag mongo-2-pg registry.example.com/mongo-2-pg:latest
+docker push registry.example.com/mongo-2-pg:latest
+
+# Run from the registry
+kubectl run migration \
+  --image=registry.example.com/mongo-2-pg:latest \
+  --restart=Never --rm -it -- bash
 ```
 
 ## Usage
@@ -96,6 +158,7 @@ The Secret must contain these keys: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_
 | `--source-mongo <uri>` | Yes | Connection string for the source MongoDB server |
 | `--ferretdb <uri>` | Yes | Connection string for the FerretDB instance |
 | `--target-postgres <uri>` | No | PostgreSQL connection string (informational) |
+| `--databases <db1,db2,...>` | No | Only migrate these databases (comma-separated) |
 | `--skip-verify` | No | Skip post-migration document count verification |
 
 The script will:

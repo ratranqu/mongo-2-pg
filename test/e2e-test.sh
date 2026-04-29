@@ -68,8 +68,8 @@ kubectl get all -n "$NAMESPACE" 2>/dev/null || true
 echo ""
 echo "=== Waiting for pods ==="
 
-echo "Waiting for PostgreSQL ..."
-kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=300s
+echo "Waiting for PostgreSQL (DocumentDB extension init can be slow) ..."
+kubectl wait --for=condition=ready pod -l app=postgres -n "$NAMESPACE" --timeout=600s
 
 echo "Waiting for source MongoDB ..."
 kubectl wait --for=condition=ready pod -l app=source-mongodb -n "$NAMESPACE" --timeout=300s

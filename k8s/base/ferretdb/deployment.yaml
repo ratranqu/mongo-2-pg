@@ -17,6 +17,7 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: postgres:17
+          imagePullPolicy: IfNotPresent
           command:
             - sh
             - -c
@@ -45,6 +46,7 @@ spec:
       containers:
         - name: ferretdb
           image: ghcr.io/ferretdb/ferretdb:2.7.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 27017
               name: mongo
