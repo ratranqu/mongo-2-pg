@@ -1,25 +1,54 @@
-name: Build Docker Image
+name: Build & Push Docker Image
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
       - name: Build image
-        run: docker build -t mongo-2-pg:${{ github.sha }} .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
       - name: Verify tools in image
         run: |
-          docker run --rm mongo-2-pg:${{ github.sha }} -c "
+          docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7} -c "
             mongosh --version &&
             mongodump --version &&
             mongorestore --version &&
@@ -27,3 +56,9 @@ jobs:
             kubectl version --client &&
             git --version
           "
+
+      - name: Push image
+        run: |
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            docker push "$tag"
+          done
