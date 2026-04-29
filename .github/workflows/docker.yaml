@@ -1,0 +1,29 @@
+name: Build Docker Image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t mongo-2-pg:${{ github.sha }} .
+
+      - name: Verify tools in image
+        run: |
+          docker run --rm mongo-2-pg:${{ github.sha }} -c "
+            mongosh --version &&
+            mongodump --version &&
+            mongorestore --version &&
+            psql --version &&
+            kubectl version --client &&
+            git --version
+          "
