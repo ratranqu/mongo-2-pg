@@ -134,7 +134,7 @@ If you already have a PostgreSQL instance with the DocumentDB extension installe
 kubectl create secret generic ferretdb-postgres \
   --from-literal=POSTGRES_HOST=my-postgres.example.com \
   --from-literal=POSTGRES_PORT=5432 \
-  --from-literal=POSTGRES_DB=ferretdb \
+  --from-literal=POSTGRES_DB=postgres \
   --from-literal=POSTGRES_USER=myuser \
   --from-literal=POSTGRES_PASSWORD=mypassword
 
@@ -234,7 +234,7 @@ After any migration, you can validate the PostgreSQL state independently:
 
 ```bash
 ./test/validate.sh \
-  "postgresql://ferretdb:ferretdb@localhost:5432/ferretdb" \
+  "postgresql://ferretdb:ferretdb@localhost:5432/postgres" \
   "mongodb://ferretdb-host:27017"
 ```
 
@@ -280,7 +280,7 @@ If you bring your own PostgreSQL instance, you must install the DocumentDB exten
 
 5. Create the extension in your target database:
    ```bash
-   psql -U postgres -d ferretdb -c 'CREATE EXTENSION IF NOT EXISTS pg_documentdb CASCADE;'
+   psql -U postgres -d postgres -c 'CREATE EXTENSION IF NOT EXISTS pg_documentdb CASCADE;'
    ```
 
 For RPM-based distributions, equivalent packages are available on the same releases page.

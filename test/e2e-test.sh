@@ -118,7 +118,7 @@ mongosh --quiet --norc "mongodb://localhost:27117" --eval 'print("ping:" + db.ru
 echo "  Source MongoDB: OK"
 mongosh --quiet --norc "mongodb://localhost:27217" --eval 'print("ping:" + db.runCommand({ping:1}).ok)'
 echo "  FerretDB: OK"
-psql "postgresql://ferretdb:ferretdb@localhost:25432/ferretdb" -c "SELECT 1;" >/dev/null
+psql "postgresql://ferretdb:ferretdb@localhost:25432/postgres" -c "SELECT 1;" >/dev/null
 echo "  PostgreSQL: OK"
 
 # ── 5. Run migration ─────────────────────────────────────────────────────────
@@ -128,14 +128,14 @@ echo "=== Running migration ==="
 "$PROJECT_DIR/migrate.sh" \
   --source-mongo "mongodb://localhost:27117" \
   --ferretdb "mongodb://localhost:27217" \
-  --target-postgres "postgresql://ferretdb:ferretdb@localhost:25432/ferretdb"
+  --target-postgres "postgresql://ferretdb:ferretdb@localhost:25432/postgres"
 
 # ── 6. Validate results ──────────────────────────────────────────────────────
 echo ""
 echo "=== Validating results ==="
 
 "$SCRIPT_DIR/validate.sh" \
-  "postgresql://ferretdb:ferretdb@localhost:25432/ferretdb" \
+  "postgresql://ferretdb:ferretdb@localhost:25432/postgres" \
   "mongodb://localhost:27217"
 
 echo ""
