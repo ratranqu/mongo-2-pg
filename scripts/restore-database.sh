@@ -20,9 +20,12 @@ fi
 
 echo "Restoring database '$DB_NAME' into FerretDB ..."
 
+# Drop existing database to ensure clean state (handles stale metadata from previous runs)
+mongosh --quiet --norc "$FERRETDB_URI" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()" 2>/dev/null || true
+
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   if mongorestore --uri="$FERRETDB_URI" --db="$DB_NAME" --dir="$DUMP_PATH" \
-       --drop --numParallelCollections="$PARALLEL_COLLECTIONS" \
+       --numParallelCollections="$PARALLEL_COLLECTIONS" \
        --numInsertionWorkersPerCollection="$INSERTION_WORKERS" --gzip 2>&1; then
     echo "Restore complete for '$DB_NAME'"
     exit 0

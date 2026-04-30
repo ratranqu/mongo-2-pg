@@ -15,11 +15,14 @@ RETRY_DELAY=5
 
 echo "Streaming database '$DB_NAME' (source → FerretDB) ..."
 
+# Drop existing database to ensure clean state (handles stale metadata from previous runs)
+mongosh --quiet --norc "$FERRETDB_URI" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()" 2>/dev/null || true
+
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   if mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --archive --gzip \
        --numParallelCollections="$PARALLEL_COLLECTIONS" --quiet 2>&1 | \
      mongorestore --uri="$FERRETDB_URI" --archive --gzip --db="$DB_NAME" \
-       --drop --numParallelCollections="$PARALLEL_COLLECTIONS" \
+       --numParallelCollections="$PARALLEL_COLLECTIONS" \
        --numInsertionWorkersPerCollection="$INSERTION_WORKERS" 2>&1; then
     echo "Stream complete for '$DB_NAME'"
     exit 0
