@@ -20,8 +20,18 @@ fi
 
 echo "Restoring database '$DB_NAME' into FerretDB ..."
 
-# Drop existing database to ensure clean state (handles stale metadata from previous runs)
-mongosh --quiet --norc "$FERRETDB_URI" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()" 2>/dev/null || true
+# FerretDB/DocumentDB's dropDatabase() doesn't always clean up catalog entries,
+# leaving stale metadata that points to non-existent PostgreSQL tables.
+# Drop every collection individually first, then drop the database.
+drop_database() {
+  mongosh --quiet --norc "$FERRETDB_URI" --eval "
+    const d = db.getSiblingDB('$DB_NAME');
+    d.getCollectionNames().forEach(c => { d.getCollection(c).drop(); });
+    d.dropDatabase();
+  " 2>/dev/null || true
+}
+
+drop_database
 
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   # FerretDB/DocumentDB races when creating multiple collections in parallel,
@@ -37,6 +47,7 @@ for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
     echo "WARNING: Restore attempt $attempt/$MAX_RETRIES failed for '$DB_NAME', retrying in ${RETRY_DELAY}s ..." >&2
     sleep "$RETRY_DELAY"
     RETRY_DELAY=$((RETRY_DELAY * 2))
+    drop_database
   fi
 done
 
