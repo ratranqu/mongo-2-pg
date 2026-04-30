@@ -2,14 +2,10 @@ name: End-to-End Migration Test
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   e2e-test:

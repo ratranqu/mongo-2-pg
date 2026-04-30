@@ -13,16 +13,14 @@ if [[ -z "$DB_NAME" ]]; then
   exit 1
 fi
 
-# Build a maintenance URI pointing to the default 'postgres' database
-MAINT_URI=$(echo "$PG_URI" | sed "s|/[^/?]*\([?]\)|/postgres\1|; t; s|/[^/?]*$|/postgres|")
-
 echo "Ensuring database '$DB_NAME' exists ..."
-DB_EXISTS=$(psql "$MAINT_URI" -tAc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'")
-if [[ "$DB_EXISTS" != "1" ]]; then
+if psql "$PG_URI" -c '\q' 2>/dev/null; then
+  echo "  Database '$DB_NAME' already exists"
+else
+  # Build a maintenance URI pointing to the default 'postgres' database
+  MAINT_URI=$(echo "$PG_URI" | sed "s|/[^/?]*\([?]\)|/postgres\1|; t; s|/[^/?]*$|/postgres|")
   psql "$MAINT_URI" -c "CREATE DATABASE \"${DB_NAME}\";"
   echo "  Created database '$DB_NAME'"
-else
-  echo "  Database '$DB_NAME' already exists"
 fi
 
 echo "Ensuring DocumentDB extension is installed in '$DB_NAME' ..."
