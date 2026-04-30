@@ -19,8 +19,8 @@ Source MongoDB ──mongodump──► local dump ──mongorestore──► F
 ## Prerequisites
 
 - `mongosh`, `mongodump`, `mongorestore` (from [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/))
-- `psql` (PostgreSQL client, only needed for validation)
-- `kubectl` with access to a Kubernetes cluster (for FerretDB deployment and tests)
+- `psql` (PostgreSQL client — required when using `--target-postgres` or `--target-db`, and for validation)
+- `kubectl` with access to a Kubernetes cluster (required when using `--target-db`, and for FerretDB deployment/tests)
 - A running FerretDB instance connected to the target PostgreSQL database
 
 ## Repository Structure
@@ -33,7 +33,8 @@ mongo-2-pg/
 │   ├── list-databases.sh             # List non-system databases on source
 │   ├── dump-database.sh              # Dump a single database
 │   ├── restore-database.sh           # Restore a single database to FerretDB
-│   └── verify-migration.sh           # Verify document counts match
+│   ├── verify-migration.sh           # Verify document counts match
+│   └── prepare-target-db.sh          # Ensure target PG database + DocumentDB extension exist
 ├── k8s/
 │   ├── base/
 │   │   ├── ferretdb/                 #   FerretDB deployment (reads Secret)
@@ -81,7 +82,8 @@ kubectl run migration --image=mongo-2-pg --restart=Never --rm -it -- bash
 # Inside the pod, run the migration
 migrate.sh \
   --source-mongo "mongodb://source-mongodb:27017" \
-  --ferretdb "mongodb://ferretdb:27017"
+  --ferretdb "mongodb://ferretdb:27017" \
+  --target-db mongo-pg
 ```
 
 Or run non-interactively:
@@ -151,20 +153,38 @@ The Secret must contain these keys: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_
   --ferretdb "mongodb://ferretdb-host:27017"
 ```
 
+To ensure the target PostgreSQL database exists and has the DocumentDB extension installed, provide either a full URI or just the database name:
+
+```bash
+# Full PostgreSQL URI
+./migrate.sh \
+  --source-mongo "mongodb://source-host:27017" \
+  --ferretdb "mongodb://ferretdb-host:27017" \
+  --target-postgres "postgresql://user:pass@pg-host:5432/mongo-pg"
+
+# Or just the database name (credentials read from ferretdb-postgres secret)
+./migrate.sh \
+  --source-mongo "mongodb://source-host:27017" \
+  --ferretdb "mongodb://ferretdb-host:27017" \
+  --target-db mongo-pg --namespace my-namespace
+```
+
 **Arguments:**
 
 | Argument | Required | Description |
 |---|---|---|
 | `--source-mongo <uri>` | Yes | Connection string for the source MongoDB server |
 | `--ferretdb <uri>` | Yes | Connection string for the FerretDB instance |
-| `--target-postgres <uri>` | No | PostgreSQL connection string (informational) |
+| `--target-postgres <uri>` | No | PostgreSQL URI — ensures the database exists and has the DocumentDB extension installed before migrating. Mutually exclusive with `--target-db` |
+| `--target-db <dbname>` | No | Target PostgreSQL database name. Reads host, port, and credentials from the `ferretdb-postgres` Kubernetes secret. Mutually exclusive with `--target-postgres` |
+| `--namespace <ns>` | No | Kubernetes namespace for the `ferretdb-postgres` secret (used with `--target-db`, defaults to current kubectl context namespace) |
 | `--databases <db1,db2,...>` | No | Only migrate these databases (comma-separated) |
 | `--skip-verify` | No | Skip post-migration document count verification |
 
 The script will:
-1. Discover all non-system databases on the source (excludes `admin`, `local`, `config`)
-2. Dump each database with `mongodump`
-3. Restore each into FerretDB with `mongorestore`
+1. If `--target-postgres` or `--target-db` is given, ensure the target database exists and has the DocumentDB extension installed
+2. Discover all non-system databases on the source (excludes `admin`, `local`, `config`)
+3. Dump and restore each database in parallel with `mongodump`/`mongorestore`
 4. Verify document counts match between source and target
 5. Print a summary
 
