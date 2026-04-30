@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Restore a single database dump into FerretDB (which writes to PostgreSQL).
-# Usage: restore-database.sh <ferretdb-uri> <db-name> <dump-dir>
+# Usage: restore-database.sh <ferretdb-uri> <db-name> <dump-dir> [parallel-collections] [insertion-workers]
 set -euo pipefail
 
-FERRETDB_URI="${1:?Usage: restore-database.sh <ferretdb-uri> <db-name> <dump-dir>}"
+FERRETDB_URI="${1:?Usage: restore-database.sh <ferretdb-uri> <db-name> <dump-dir> [parallel-collections] [insertion-workers]}"
 DB_NAME="${2:?Missing db-name}"
 DUMP_DIR="${3:?Missing dump-dir}"
+PARALLEL_COLLECTIONS="${4:-4}"
+INSERTION_WORKERS="${5:-4}"
 
 MAX_RETRIES=3
 RETRY_DELAY=5
@@ -20,7 +22,8 @@ echo "Restoring database '$DB_NAME' into FerretDB ..."
 
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   if mongorestore --uri="$FERRETDB_URI" --db="$DB_NAME" --dir="$DUMP_PATH" \
-       --numParallelCollections=4 --numInsertionWorkersPerCollection=4 --gzip 2>&1; then
+       --numParallelCollections="$PARALLEL_COLLECTIONS" \
+       --numInsertionWorkersPerCollection="$INSERTION_WORKERS" --gzip 2>&1; then
     echo "Restore complete for '$DB_NAME'"
     exit 0
   fi

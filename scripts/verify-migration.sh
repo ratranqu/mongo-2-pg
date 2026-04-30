@@ -24,51 +24,66 @@ ERRORS=0
 VERIFY_TMP=$(mktemp -d -t mongo-verify-XXXXXX)
 trap 'rm -rf "$VERIFY_TMP"' EXIT
 
-for db in "${DATABASES[@]}"; do
-  COLLECTIONS=$(mongosh --quiet --norc "$SOURCE_URI" --eval "
-    db.getSiblingDB('$db').getCollectionNames().forEach(c => print(c));
-  ")
+# Collect all counts in two mongosh calls (one per side) instead of per-collection
+mongosh --quiet --norc "$SOURCE_URI" --eval "
+  const dbs = [$(printf "'%s'," "${DATABASES[@]}" | sed 's/,$//')]
+  dbs.forEach(dbName => {
+    const d = db.getSiblingDB(dbName);
+    d.getCollectionNames().forEach(c => {
+      print(dbName + '\t' + c + '\t' + d.getCollection(c).estimatedDocumentCount());
+    });
+  });
+" > "$VERIFY_TMP/src_counts" &
 
-  if [[ -z "$COLLECTIONS" ]]; then
-    echo "--- Verifying database: $db ---"
+mongosh --quiet --norc "$FERRETDB_URI" --eval "
+  const dbs = [$(printf "'%s'," "${DATABASES[@]}" | sed 's/,$//')]
+  dbs.forEach(dbName => {
+    const d = db.getSiblingDB(dbName);
+    d.getCollectionNames().forEach(c => {
+      print(dbName + '\t' + c + '\t' + d.getCollection(c).estimatedDocumentCount());
+    });
+  });
+" > "$VERIFY_TMP/dst_counts" &
+
+wait
+
+# Build associative lookups and compare
+declare -A SRC_COUNTS DST_COUNTS ALL_KEYS DB_COLLS
+while IFS=$'\t' read -r _db _coll _count; do
+  [[ -z "$_db" ]] && continue
+  SRC_COUNTS["${_db}.${_coll}"]="$_count"
+  ALL_KEYS["${_db}.${_coll}"]=1
+  DB_COLLS["$_db"]+="${_coll}"$'\n'
+done < "$VERIFY_TMP/src_counts"
+
+while IFS=$'\t' read -r _db _coll _count; do
+  [[ -z "$_db" ]] && continue
+  DST_COUNTS["${_db}.${_coll}"]="$_count"
+  ALL_KEYS["${_db}.${_coll}"]=1
+  DB_COLLS["$_db"]+="${_coll}"$'\n'
+done < "$VERIFY_TMP/dst_counts"
+
+for db in "${DATABASES[@]}"; do
+  echo "--- Verifying database: $db ---"
+  _colls="${DB_COLLS[$db]:-}"
+  if [[ -z "$_colls" ]]; then
     echo "  (no collections)"
     continue
   fi
 
-  echo "$COLLECTIONS" > "$VERIFY_TMP/${db}.colls"
-
   while IFS= read -r coll; do
     [[ -z "$coll" ]] && continue
+    _key="${db}.${coll}"
+    _src="${SRC_COUNTS[$_key]:-0}"
+    _dst="${DST_COUNTS[$_key]:-0}"
 
-    mongosh --quiet --norc "$SOURCE_URI" --eval "
-      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
-    " | tr -d '[:space:]' > "$VERIFY_TMP/${db}.${coll}.src" &
-
-    mongosh --quiet --norc "$FERRETDB_URI" --eval "
-      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
-    " | tr -d '[:space:]' > "$VERIFY_TMP/${db}.${coll}.dst" &
-
-  done <<< "$COLLECTIONS"
-done
-
-wait
-
-for db in "${DATABASES[@]}"; do
-  echo "--- Verifying database: $db ---"
-  [[ ! -f "$VERIFY_TMP/${db}.colls" ]] && continue
-
-  while IFS= read -r coll; do
-    [[ -z "$coll" ]] && continue
-    SRC_COUNT=$(<"$VERIFY_TMP/${db}.${coll}.src")
-    DST_COUNT=$(<"$VERIFY_TMP/${db}.${coll}.dst")
-
-    if [[ "$SRC_COUNT" == "$DST_COUNT" ]]; then
-      echo "  $db.$coll: OK ($SRC_COUNT documents)"
+    if [[ "$_src" == "$_dst" ]]; then
+      echo "  $_key: OK ($_src documents)"
     else
-      echo "  $db.$coll: MISMATCH — source=$SRC_COUNT, target=$DST_COUNT" >&2
+      echo "  $_key: MISMATCH — source=$_src, target=$_dst" >&2
       ERRORS=$((ERRORS + 1))
     fi
-  done < "$VERIFY_TMP/${db}.colls"
+  done <<< "$(echo "$_colls" | sort -u)"
 done
 
 echo ""

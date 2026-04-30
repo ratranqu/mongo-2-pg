@@ -5,11 +5,15 @@ Migrate MongoDB databases to PostgreSQL via [FerretDB](https://www.ferretdb.io/)
 ## Architecture
 
 ```
+                          dump+restore (default)
 Source MongoDB ──mongodump──► local dump ──mongorestore──► FerretDB ──► PostgreSQL
-                                                             ▲
-                                                             │
-                                                      Existing clients
-                                                      (MongoDB protocol)
+
+                          --stream (no temp disk)
+Source MongoDB ──mongodump --archive | mongorestore --archive──► FerretDB ──► PostgreSQL
+                                                                   ▲
+                                                                   │
+                                                            Existing clients
+                                                            (MongoDB protocol)
 ```
 
 - Each MongoDB database maps to a PostgreSQL schema
@@ -33,6 +37,7 @@ mongo-2-pg/
 │   ├── list-databases.sh             # List non-system databases on source
 │   ├── dump-database.sh              # Dump a single database
 │   ├── restore-database.sh           # Restore a single database to FerretDB
+│   ├── stream-database.sh            # Stream a database (mongodump | mongorestore, no temp disk)
 │   ├── verify-migration.sh           # Verify document counts match
 │   └── prepare-target-db.sh          # Ensure target PG database + DocumentDB extension exist
 ├── k8s/
@@ -179,14 +184,39 @@ To ensure the target PostgreSQL database exists and has the DocumentDB extension
 | `--target-db <dbname>` | No | Target PostgreSQL database name. Reads host, port, and credentials from the `ferretdb-postgres` Kubernetes secret. Mutually exclusive with `--target-postgres` |
 | `--namespace <ns>` | No | Kubernetes namespace for the `ferretdb-postgres` secret (used with `--target-db`, defaults to current kubectl context namespace) |
 | `--databases <db1,db2,...>` | No | Only migrate these databases (comma-separated) |
+| `--stream` | No | Pipe `mongodump --archive` directly to `mongorestore --archive`, eliminating temp disk usage. Recommended for large migrations over fast links |
+| `--max-concurrent <n>` | No | Max databases to migrate concurrently (default: 1 for dump+restore, 2 for `--stream`) |
+| `--parallel-collections <n>` | No | Collections to dump/restore in parallel per database (default: 4) |
+| `--insertion-workers <n>` | No | Insertion workers per collection during restore (default: 4) |
 | `--skip-verify` | No | Skip post-migration document count verification |
 
 The script will:
 1. If `--target-postgres` or `--target-db` is given, ensure the target database exists and has the DocumentDB extension installed
 2. Discover all non-system databases on the source (excludes `admin`, `local`, `config`)
-3. Dump and restore each database in parallel with `mongodump`/`mongorestore`
+3. Migrate each database using either dump+restore (default) or streaming mode (`--stream`), up to `--max-concurrent` databases at a time
 4. Verify document counts match between source and target
-5. Print a summary
+5. Print per-database statistics and a summary
+
+### Performance Tuning
+
+For large migrations (hundreds of GBs), use streaming mode to avoid temp disk I/O and increase concurrency:
+
+```bash
+./migrate.sh \
+  --source-mongo "mongodb://source-host:27017" \
+  --ferretdb "mongodb://ferretdb-host:27017" \
+  --stream \
+  --max-concurrent 4 \
+  --parallel-collections 8 \
+  --insertion-workers 8
+```
+
+| Flag | Effect | Trade-off |
+|---|---|---|
+| `--stream` | Pipes dump directly to restore, no temp disk | Cannot retry individual collections; retries the whole database |
+| `--max-concurrent` | Migrates N databases in parallel | Higher FerretDB/PostgreSQL load |
+| `--parallel-collections` | Dumps/restores N collections simultaneously per database | Higher memory usage per database |
+| `--insertion-workers` | N writer threads per collection during restore | Higher PostgreSQL write load |
 
 ### 3. Point Clients to FerretDB
 
@@ -211,10 +241,13 @@ The migration is composed of modular scripts that can be used independently:
 ./scripts/list-databases.sh "mongodb://host:27017"
 
 # Dump a single database
-./scripts/dump-database.sh "mongodb://host:27017" mydb /tmp/dump
+./scripts/dump-database.sh "mongodb://host:27017" mydb /tmp/dump [parallel-collections]
 
 # Restore a single database to FerretDB
-./scripts/restore-database.sh "mongodb://ferretdb:27017" mydb /tmp/dump
+./scripts/restore-database.sh "mongodb://ferretdb:27017" mydb /tmp/dump [parallel-collections] [insertion-workers]
+
+# Stream a single database (no temp disk)
+./scripts/stream-database.sh "mongodb://host:27017" "mongodb://ferretdb:27017" mydb [parallel-collections] [insertion-workers]
 
 # Verify document counts match between source and target
 ./scripts/verify-migration.sh "mongodb://source:27017" "mongodb://ferretdb:27017"
@@ -226,7 +259,7 @@ The migration is composed of modular scripts that can be used independently:
 
 ### End-to-end Test
 
-The e2e test deploys a complete environment in Kubernetes (source MongoDB with 2 seeded databases, PostgreSQL 18, and FerretDB), runs the migration, and validates the result.
+The e2e test deploys a complete environment in Kubernetes (source MongoDB with 6 seeded databases, PostgreSQL with DocumentDB, and FerretDB), runs the migration, and validates the result.
 
 ```bash
 # Requires a Kubernetes cluster (e.g., kind, minikube, or a real cluster)
@@ -239,8 +272,8 @@ The e2e test deploys a complete environment in Kubernetes (source MongoDB with 2
 The test:
 1. Creates a `mongo2pg-test` namespace
 2. Deploys source MongoDB, PostgreSQL, and FerretDB
-3. Seeds two databases (`testdb1` with users + orders, `testdb2` with products + categories)
-4. Runs the full migration
+3. Seeds six databases (`testdb1` with users/orders/matrices, `testdb2` with products/categories, `testdb3`–`testdb6` with items/logs for concurrency testing)
+4. Runs the full migration with concurrent database processing
 5. Validates that PostgreSQL contains the correct schemas and data
 6. Cleans up
 

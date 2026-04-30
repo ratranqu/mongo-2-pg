@@ -2,14 +2,20 @@
 # Migrate all non-system databases from a MongoDB server to PostgreSQL via FerretDB.
 #
 # Usage:
-#   migrate.sh --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--databases <db1,db2,...>] [--skip-verify]
-#   migrate.sh --source-mongo <uri> --ferretdb <uri> --target-db <dbname> [--namespace <ns>] [--databases <db1,db2,...>] [--skip-verify]
+#   migrate.sh --source-mongo <uri> --ferretdb <uri> [options]
 #
 # The FerretDB instance must already be running and connected to the target PostgreSQL.
-# When --target-postgres is provided, the script ensures the database exists and has
-# the DocumentDB extension installed before starting the migration.
-# --target-db is a shorthand that builds the PostgreSQL URI from the ferretdb-postgres
-# secret in the given namespace (default: current kubectl context namespace).
+#
+# Options:
+#   --target-postgres <uri>    Ensure this PG database exists with DocumentDB extension
+#   --target-db <dbname>       Same, but read credentials from ferretdb-postgres k8s secret
+#   --namespace <ns>           Kubernetes namespace for --target-db secret lookup
+#   --databases <db1,db2,...>  Only migrate these databases
+#   --stream                   Pipe mongodump directly to mongorestore (no temp disk)
+#   --max-concurrent <n>       Max databases to migrate concurrently (default: 1, or 2 with --stream)
+#   --parallel-collections <n> Collections to dump/restore in parallel per DB (default: 4)
+#   --insertion-workers <n>    Insertion workers per collection during restore (default: 4)
+#   --skip-verify              Skip post-migration verification
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,10 +27,14 @@ TARGET_POSTGRES=""
 TARGET_DB=""
 NAMESPACE=""
 ONLY_DATABASES=""
+STREAM=false
+MAX_CONCURRENT=""
+PARALLEL_COLLECTIONS=4
+INSERTION_WORKERS=4
 SKIP_VERIFY=false
 
 usage() {
-  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--skip-verify]"
+  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--skip-verify]"
   exit 1
 }
 
@@ -46,6 +56,10 @@ while [[ $# -gt 0 ]]; do
     --target-db)     TARGET_DB="$2";       shift 2 ;;
     --namespace)     NAMESPACE="$2";       shift 2 ;;
     --databases)     ONLY_DATABASES="$2";  shift 2 ;;
+    --stream)        STREAM=true;         shift ;;
+    --max-concurrent) MAX_CONCURRENT="$2"; shift 2 ;;
+    --parallel-collections) PARALLEL_COLLECTIONS="$2"; shift 2 ;;
+    --insertion-workers)    INSERTION_WORKERS="$2";     shift 2 ;;
     --skip-verify)   SKIP_VERIFY=true;    shift ;;
     *)               usage ;;
   esac
@@ -58,6 +72,8 @@ if [[ -n "$TARGET_DB" && -n "$TARGET_POSTGRES" ]]; then
   echo "ERROR: --target-db and --target-postgres are mutually exclusive" >&2
   usage
 fi
+
+[[ -z "$MAX_CONCURRENT" ]] && { [[ "$STREAM" == "true" ]] && MAX_CONCURRENT=2 || MAX_CONCURRENT=1; }
 
 # ── Check prerequisites ──────────────────────────────────────────────────────
 REQUIRED_CMDS=(mongosh mongodump mongorestore)
@@ -134,84 +150,130 @@ if [[ -n "$ONLY_DATABASES" ]]; then
   echo "Filtered to ${#DATABASES[@]} database(s): ${DATABASES[*]}"
 fi
 
-# ── Dump & Restore ────────────────────────────────────────────────────────────
-DUMP_DIR=$(mktemp -d -t mongo-dump-XXXXXX)
+# ── Migration ─────────────────────────────────────────────────────────────────
+RESULT_DIR=$(mktemp -d -t mongo-results-XXXXXX)
+
 echo ""
 echo "=== Starting migration ==="
-echo "Dump directory: $DUMP_DIR"
+if [[ "$STREAM" == "true" ]]; then
+  echo "Mode: stream (mongodump | mongorestore, no temp disk)"
+else
+  DUMP_DIR=$(mktemp -d -t mongo-dump-XXXXXX)
+  echo "Mode: dump+restore (temp dir: $DUMP_DIR)"
+fi
+echo "Concurrency: $MAX_CONCURRENT database(s), $PARALLEL_COLLECTIONS parallel collections, $INSERTION_WORKERS insertion workers"
 
-RESULT_DIR=$(mktemp -d -t mongo-results-XXXXXX)
 MIGRATION_START=$(date +%s)
 
-# Count source documents per database (in parallel)
-for db in "${DATABASES[@]}"; do
-  mongosh --quiet --norc "$SOURCE_MONGO" --eval "
+# Count source documents per database (single mongosh call)
+mongosh --quiet --norc "$SOURCE_MONGO" --eval "
+  const dbs = [$(printf "'%s'," "${DATABASES[@]}" | sed 's/,$//')]
+  dbs.forEach(dbName => {
+    const d = db.getSiblingDB(dbName);
     let total = 0;
-    db.getSiblingDB('$db').getCollectionNames().forEach(c => {
-      total += db.getSiblingDB('$db').getCollection(c).countDocuments();
+    d.getCollectionNames().forEach(c => {
+      total += d.getCollection(c).estimatedDocumentCount();
     });
-    print(total);
-  " | tr -d '[:space:]' > "$RESULT_DIR/$db.doc_count" &
+    print(dbName + '\t' + total);
+  });
+" | while IFS=$'\t' read -r _db _count; do
+  [[ -n "$_db" ]] && echo "$_count" > "$RESULT_DIR/$_db.doc_count"
 done
-wait
 
-# Phase 1: Dump all databases in parallel
-echo ""
-echo "── Phase 1: Dumping databases ──"
-DUMP_PIDS=()
-DUMP_START=$(date +%s)
-for db in "${DATABASES[@]}"; do
-  (
+# ── Run migration (stream or dump+restore) ───────────────────────────────────
+
+_migrate_one() {
+  local db="$1" _s _elapsed _docs
+  _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo "?")
+
+  if [[ "$STREAM" == "true" ]]; then
+    echo "  → $db ($_docs docs): streaming ..."
     _s=$(date +%s)
-    "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR"
+    if "$SCRIPT_DIR/scripts/stream-database.sh" "$SOURCE_MONGO" "$FERRETDB" "$db" \
+         "$PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
+      _elapsed=$(( $(date +%s) - _s ))
+      echo "$_elapsed" > "$RESULT_DIR/$db.migrate_time"
+      echo "  ✓ $db streamed in ${_elapsed}s"
+      touch "$RESULT_DIR/$db.ok"
+    else
+      _elapsed=$(( $(date +%s) - _s ))
+      echo "$_elapsed" > "$RESULT_DIR/$db.migrate_time"
+      echo "  ✗ $db stream FAILED after ${_elapsed}s" >&2
+      touch "$RESULT_DIR/$db.fail"
+    fi
+  else
+    # Dump
+    echo "  → $db ($_docs docs): dumping ..."
+    _s=$(date +%s)
+    if ! "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR" \
+           "$PARALLEL_COLLECTIONS"; then
+      _elapsed=$(( $(date +%s) - _s ))
+      echo "  ✗ $db dump FAILED after ${_elapsed}s" >&2
+      touch "$RESULT_DIR/$db.fail"
+      return 1
+    fi
     _elapsed=$(( $(date +%s) - _s ))
     echo "$_elapsed" > "$RESULT_DIR/$db.dump_time"
     _bytes=$(du -sb "$DUMP_DIR/$db" 2>/dev/null | cut -f1)
     echo "${_bytes:-0}" > "$RESULT_DIR/$db.dump_size"
     _mb=$(awk "BEGIN { printf \"%.1f\", ${_bytes:-0} / 1048576 }")
-    _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo "?")
-    echo "  ✓ $db dumped: ${_mb} MB, ${_docs} docs in ${_elapsed}s"
-  ) &
-  DUMP_PIDS+=($!)
-done
+    echo "  ✓ $db dumped: ${_mb} MB in ${_elapsed}s"
 
-for i in "${!DATABASES[@]}"; do
-  if ! wait "${DUMP_PIDS[$i]}"; then
-    echo "  ✗ ${DATABASES[$i]} dump FAILED" >&2
-    touch "$RESULT_DIR/${DATABASES[$i]}.fail"
+    # Restore
+    echo "  → $db: restoring ..."
+    _s=$(date +%s)
+    if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR" \
+         "$PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
+      _elapsed=$(( $(date +%s) - _s ))
+      echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
+      echo "  ✓ $db restored in ${_elapsed}s"
+      touch "$RESULT_DIR/$db.ok"
+    else
+      _elapsed=$(( $(date +%s) - _s ))
+      echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
+      echo "  ✗ $db restore FAILED after ${_elapsed}s" >&2
+      touch "$RESULT_DIR/$db.fail"
+    fi
   fi
-done
-DUMP_END=$(date +%s)
-echo "  Dump phase: $((DUMP_END - DUMP_START))s (parallel)"
+}
 
-# Phase 2: Restore databases sequentially (FerretDB cannot handle concurrent restores)
 echo ""
-echo "── Phase 2: Restoring databases ──"
-RESTORE_START=$(date +%s)
-_restore_n=0
-for db in "${DATABASES[@]}"; do
-  [[ -f "$RESULT_DIR/$db.fail" ]] && continue
-  _restore_n=$((_restore_n + 1))
-  _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo "?")
-  _mb=$(awk "BEGIN { printf \"%.1f\", $(cat "$RESULT_DIR/$db.dump_size" 2>/dev/null || echo 0) / 1048576 }")
-  echo ""
-  echo "  [${_restore_n}/${#DATABASES[@]}] Restoring $db (${_mb} MB, ${_docs} docs) ..."
-  _s=$(date +%s)
-  if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR"; then
-    touch "$RESULT_DIR/$db.ok"
-    _elapsed=$(( $(date +%s) - _s ))
-    echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
-    echo "  ✓ $db restored in ${_elapsed}s"
-  else
-    _elapsed=$(( $(date +%s) - _s ))
-    echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
-    echo "  ✗ $db restore FAILED after ${_elapsed}s" >&2
-    touch "$RESULT_DIR/$db.fail"
+echo "── Migrating ${#DATABASES[@]} database(s), max $MAX_CONCURRENT concurrent ──"
+ACTIVE_PIDS=()
+ACTIVE_DBS=()
+_db_idx=0
+
+while [[ $_db_idx -lt ${#DATABASES[@]} ]] || [[ ${#ACTIVE_PIDS[@]} -gt 0 ]]; do
+  # Launch up to MAX_CONCURRENT
+  while [[ $_db_idx -lt ${#DATABASES[@]} ]] && [[ ${#ACTIVE_PIDS[@]} -lt $MAX_CONCURRENT ]]; do
+    db="${DATABASES[$_db_idx]}"
+    _db_idx=$((_db_idx + 1))
+    _migrate_one "$db" &
+    ACTIVE_PIDS+=($!)
+    ACTIVE_DBS+=("$db")
+  done
+
+  # Wait for any one to finish
+  if [[ ${#ACTIVE_PIDS[@]} -gt 0 ]]; then
+    wait -n "${ACTIVE_PIDS[@]}" 2>/dev/null || true
+    # Rebuild active list (remove finished PIDs)
+    _new_pids=()
+    _new_dbs=()
+    for i in "${!ACTIVE_PIDS[@]}"; do
+      if kill -0 "${ACTIVE_PIDS[$i]}" 2>/dev/null; then
+        _new_pids+=("${ACTIVE_PIDS[$i]}")
+        _new_dbs+=("${ACTIVE_DBS[$i]}")
+      fi
+    done
+    ACTIVE_PIDS=("${_new_pids[@]+"${_new_pids[@]}"}")
+    ACTIVE_DBS=("${_new_dbs[@]+"${_new_dbs[@]}"}")
   fi
 done
-RESTORE_END=$(date +%s)
-echo "  Restore phase: $((RESTORE_END - RESTORE_START))s (sequential)"
 
+# Wait for any stragglers
+wait
+
+MIGRATE_END=$(date +%s)
 MIGRATED=$(find "$RESULT_DIR" -name '*.ok' | wc -l)
 FAILED=$(find "$RESULT_DIR" -name '*.fail' | wc -l)
 
@@ -226,33 +288,50 @@ fi
 
 # ── Statistics ────────────────────────────────────────────────────────────────
 MIGRATION_END=$(date +%s)
+WALL_TIME=$(( MIGRATION_END - MIGRATION_START ))
 echo ""
 echo "=== Migration Statistics ==="
-printf "%-32s %10s %10s %10s %12s\n" "Database" "Dump (MB)" "Documents" "Dump (s)" "Restore (s)"
-printf "%-32s %10s %10s %10s %12s\n" "--------------------------------" "----------" "----------" "----------" "------------"
 
 TOTAL_BYTES=0
 TOTAL_DOCS=0
-for db in "${DATABASES[@]}"; do
-  _bytes=$(cat "$RESULT_DIR/$db.dump_size" 2>/dev/null || echo 0)
-  _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo 0)
-  _dt=$(cat "$RESULT_DIR/$db.dump_time" 2>/dev/null || echo -)
-  _rt=$(cat "$RESULT_DIR/$db.restore_time" 2>/dev/null || echo -)
-  _mb=$(awk "BEGIN { printf \"%.1f\", $_bytes / 1048576 }")
-  printf "%-32s %10s %10s %10s %12s\n" "$db" "$_mb" "$_docs" "${_dt}s" "${_rt}s"
-  TOTAL_BYTES=$(( TOTAL_BYTES + _bytes ))
-  TOTAL_DOCS=$(( TOTAL_DOCS + _docs ))
-done
 
-TOTAL_MB=$(awk "BEGIN { printf \"%.1f\", $TOTAL_BYTES / 1048576 }")
-WALL_TIME=$(( MIGRATION_END - MIGRATION_START ))
-printf "%-32s %10s %10s %10s %12s\n" "--------------------------------" "----------" "----------" "----------" "------------"
-printf "%-32s %10s %10s %10s %12s\n" "TOTAL" "$TOTAL_MB" "$TOTAL_DOCS" "$((DUMP_END - DUMP_START))s" "$((RESTORE_END - RESTORE_START))s"
+if [[ "$STREAM" == "true" ]]; then
+  printf "%-32s %10s %10s\n" "Database" "Documents" "Time (s)"
+  printf "%-32s %10s %10s\n" "--------------------------------" "----------" "----------"
+  for db in "${DATABASES[@]}"; do
+    _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo 0)
+    _mt=$(cat "$RESULT_DIR/$db.migrate_time" 2>/dev/null || echo -)
+    printf "%-32s %10s %10s\n" "$db" "$_docs" "${_mt}"
+    TOTAL_DOCS=$(( TOTAL_DOCS + _docs ))
+  done
+  printf "%-32s %10s %10s\n" "--------------------------------" "----------" "----------"
+  printf "%-32s %10s %10s\n" "TOTAL" "$TOTAL_DOCS" "${WALL_TIME}"
+else
+  printf "%-32s %10s %10s %10s %12s\n" "Database" "Dump (MB)" "Documents" "Dump (s)" "Restore (s)"
+  printf "%-32s %10s %10s %10s %12s\n" "--------------------------------" "----------" "----------" "----------" "------------"
+  for db in "${DATABASES[@]}"; do
+    _bytes=$(cat "$RESULT_DIR/$db.dump_size" 2>/dev/null || echo 0)
+    _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo 0)
+    _dt=$(cat "$RESULT_DIR/$db.dump_time" 2>/dev/null || echo -)
+    _rt=$(cat "$RESULT_DIR/$db.restore_time" 2>/dev/null || echo -)
+    _mb=$(awk "BEGIN { printf \"%.1f\", $_bytes / 1048576 }")
+    printf "%-32s %10s %10s %10s %12s\n" "$db" "$_mb" "$_docs" "${_dt}" "${_rt}"
+    TOTAL_BYTES=$(( TOTAL_BYTES + _bytes ))
+    TOTAL_DOCS=$(( TOTAL_DOCS + _docs ))
+  done
+  TOTAL_MB=$(awk "BEGIN { printf \"%.1f\", $TOTAL_BYTES / 1048576 }")
+  printf "%-32s %10s %10s %10s %12s\n" "--------------------------------" "----------" "----------" "----------" "------------"
+  printf "%-32s %10s %10s %22s\n" "TOTAL" "$TOTAL_MB" "$TOTAL_DOCS" "${WALL_TIME}s wall"
+fi
 
 echo ""
 echo "  Wall time:  ${WALL_TIME}s"
 if [[ $WALL_TIME -gt 0 ]]; then
-  echo "  Throughput: $(awk "BEGIN { printf \"%.1f\", $TOTAL_BYTES / 1048576 / $WALL_TIME }") MB/s, $(awk "BEGIN { printf \"%.0f\", $TOTAL_DOCS / $WALL_TIME }") docs/s"
+  if [[ "$STREAM" == "true" ]]; then
+    echo "  Throughput: $(awk "BEGIN { printf \"%.0f\", $TOTAL_DOCS / $WALL_TIME }") docs/s"
+  else
+    echo "  Throughput: $(awk "BEGIN { printf \"%.1f\", $TOTAL_BYTES / 1048576 / $WALL_TIME }") MB/s, $(awk "BEGIN { printf \"%.0f\", $TOTAL_DOCS / $WALL_TIME }") docs/s"
+  fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
