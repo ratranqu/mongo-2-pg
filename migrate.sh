@@ -3,10 +3,13 @@
 #
 # Usage:
 #   migrate.sh --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--databases <db1,db2,...>] [--skip-verify]
+#   migrate.sh --source-mongo <uri> --ferretdb <uri> --target-db <dbname> [--namespace <ns>] [--databases <db1,db2,...>] [--skip-verify]
 #
 # The FerretDB instance must already be running and connected to the target PostgreSQL.
 # When --target-postgres is provided, the script ensures the database exists and has
 # the DocumentDB extension installed before starting the migration.
+# --target-db is a shorthand that builds the PostgreSQL URI from the ferretdb-postgres
+# secret in the given namespace (default: current kubectl context namespace).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,11 +18,13 @@ RESULT_DIR=""
 SOURCE_MONGO=""
 FERRETDB=""
 TARGET_POSTGRES=""
+TARGET_DB=""
+NAMESPACE=""
 ONLY_DATABASES=""
 SKIP_VERIFY=false
 
 usage() {
-  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--databases <db1,db2,...>] [--skip-verify]"
+  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--skip-verify]"
   exit 1
 }
 
@@ -38,6 +43,8 @@ while [[ $# -gt 0 ]]; do
     --source-mongo)  SOURCE_MONGO="$2";   shift 2 ;;
     --ferretdb)      FERRETDB="$2";       shift 2 ;;
     --target-postgres) TARGET_POSTGRES="$2"; shift 2 ;;
+    --target-db)     TARGET_DB="$2";       shift 2 ;;
+    --namespace)     NAMESPACE="$2";       shift 2 ;;
     --databases)     ONLY_DATABASES="$2";  shift 2 ;;
     --skip-verify)   SKIP_VERIFY=true;    shift ;;
     *)               usage ;;
@@ -47,9 +54,15 @@ done
 [[ -z "$SOURCE_MONGO" ]] && { echo "ERROR: --source-mongo is required" >&2; usage; }
 [[ -z "$FERRETDB" ]]     && { echo "ERROR: --ferretdb is required" >&2; usage; }
 
+if [[ -n "$TARGET_DB" && -n "$TARGET_POSTGRES" ]]; then
+  echo "ERROR: --target-db and --target-postgres are mutually exclusive" >&2
+  usage
+fi
+
 # ── Check prerequisites ──────────────────────────────────────────────────────
 REQUIRED_CMDS=(mongosh mongodump mongorestore)
-[[ -n "$TARGET_POSTGRES" ]] && REQUIRED_CMDS+=(psql)
+[[ -n "$TARGET_DB" ]] && REQUIRED_CMDS+=(kubectl)
+[[ -n "$TARGET_POSTGRES" || -n "$TARGET_DB" ]] && REQUIRED_CMDS+=(psql)
 
 for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "$cmd" &>/dev/null; then
@@ -57,6 +70,22 @@ for cmd in "${REQUIRED_CMDS[@]}"; do
     exit 1
   fi
 done
+
+# ── Build TARGET_POSTGRES from k8s secret if --target-db was given ──────────
+if [[ -n "$TARGET_DB" ]]; then
+  NS_ARGS=()
+  [[ -n "$NAMESPACE" ]] && NS_ARGS=(-n "$NAMESPACE")
+
+  echo "=== Reading PostgreSQL credentials from secret ferretdb-postgres ==="
+  _get_field() { kubectl get secret ferretdb-postgres "${NS_ARGS[@]}" -o jsonpath="{.data.$1}" | base64 -d; }
+  _pg_host=$(_get_field POSTGRES_HOST) || { echo "ERROR: Could not read secret ferretdb-postgres" >&2; exit 1; }
+  _pg_port=$(_get_field POSTGRES_PORT)
+  _pg_user=$(_get_field POSTGRES_USER)
+  _pg_pass=$(_get_field POSTGRES_PASSWORD)
+
+  TARGET_POSTGRES="postgresql://${_pg_user}:${_pg_pass}@${_pg_host}:${_pg_port}/${TARGET_DB}"
+  echo "  Target PostgreSQL URI: postgresql://${_pg_user}:****@${_pg_host}:${_pg_port}/${TARGET_DB}"
+fi
 
 # ── Prepare target database ─────────────────────────────────────────────────
 if [[ -n "$TARGET_POSTGRES" ]]; then
