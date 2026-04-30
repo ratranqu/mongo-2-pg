@@ -15,6 +15,7 @@
 #   --max-concurrent <n>       Max databases to migrate concurrently (default: 1, or 2 with --stream)
 #   --parallel-collections <n> Collections to dump/restore in parallel per DB (default: 4)
 #   --insertion-workers <n>    Insertion workers per collection during restore (default: 4)
+#   --clean-target             Purge stale DocumentDB catalog entries before migrating
 #   --skip-verify              Skip post-migration verification
 set -euo pipefail
 
@@ -32,9 +33,10 @@ MAX_CONCURRENT=""
 PARALLEL_COLLECTIONS=4
 INSERTION_WORKERS=4
 SKIP_VERIFY=false
+CLEAN_TARGET=false
 
 usage() {
-  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--skip-verify]"
+  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--clean-target] [--skip-verify]"
   exit 1
 }
 
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --max-concurrent) MAX_CONCURRENT="$2"; shift 2 ;;
     --parallel-collections) PARALLEL_COLLECTIONS="$2"; shift 2 ;;
     --insertion-workers)    INSERTION_WORKERS="$2";     shift 2 ;;
+    --clean-target)  CLEAN_TARGET=true;   shift ;;
     --skip-verify)   SKIP_VERIFY=true;    shift ;;
     *)               usage ;;
   esac
@@ -148,6 +151,31 @@ if [[ -n "$ONLY_DATABASES" ]]; then
     exit 0
   fi
   echo "Filtered to ${#DATABASES[@]} database(s): ${DATABASES[*]}"
+fi
+
+# ── Clean target DocumentDB catalog if requested ─────────────────────────────
+if [[ "$CLEAN_TARGET" == "true" ]]; then
+  if [[ -z "$TARGET_POSTGRES" ]]; then
+    echo "ERROR: --clean-target requires --target-postgres or --target-db" >&2
+    exit 1
+  fi
+  echo "=== Cleaning stale DocumentDB catalog entries ==="
+  _db_list=$(printf "'%s'," "${DATABASES[@]}" | sed 's/,$//')
+  _dropped=$(psql "$TARGET_POSTGRES" -t -A -c "
+    SELECT count(*) FROM documentdb_api_catalog.collections
+    WHERE database_name IN (${_db_list});
+  ")
+  if [[ "$_dropped" -gt 0 ]]; then
+    psql "$TARGET_POSTGRES" -c "
+      SELECT documentdb_api.drop_collection(c.database_name, c.collection_name)
+      FROM documentdb_api_catalog.collections c
+      WHERE c.database_name IN (${_db_list});
+    "
+    echo "  Dropped $_dropped stale collection(s) from DocumentDB catalog"
+  else
+    echo "  No stale entries found"
+  fi
+  echo ""
 fi
 
 # ── Migration ─────────────────────────────────────────────────────────────────
