@@ -143,12 +143,12 @@ echo "Dump directory: $DUMP_DIR"
 RESULT_DIR=$(mktemp -d -t mongo-results-XXXXXX)
 MIGRATION_START=$(date +%s)
 
-# Count source documents per database (in parallel)
+# Count source documents per database (in parallel, using metadata-based estimate)
 for db in "${DATABASES[@]}"; do
   mongosh --quiet --norc "$SOURCE_MONGO" --eval "
     let total = 0;
     db.getSiblingDB('$db').getCollectionNames().forEach(c => {
-      total += db.getSiblingDB('$db').getCollection(c).countDocuments();
+      total += db.getSiblingDB('$db').getCollection(c).estimatedDocumentCount();
     });
     print(total);
   " | tr -d '[:space:]' > "$RESULT_DIR/$db.doc_count" &
