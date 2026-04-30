@@ -128,7 +128,8 @@ echo "=== Running migration ==="
 "$PROJECT_DIR/migrate.sh" \
   --source-mongo "mongodb://localhost:27117" \
   --ferretdb "mongodb://ferretdb:ferretdb@localhost:27217" \
-  --target-postgres "postgresql://ferretdb:ferretdb@localhost:25432/postgres"
+  --target-postgres "postgresql://ferretdb:ferretdb@localhost:25432/postgres" \
+  --max-concurrent 3
 
 # ── 6. Validate results ──────────────────────────────────────────────────────
 echo ""
