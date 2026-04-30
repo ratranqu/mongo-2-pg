@@ -22,7 +22,7 @@ for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   if mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --archive --gzip \
        --numParallelCollections="$PARALLEL_COLLECTIONS" --quiet 2>&1 | \
      mongorestore --uri="$FERRETDB_URI" --archive --gzip --db="$DB_NAME" \
-       --numParallelCollections="$PARALLEL_COLLECTIONS" \
+       --numParallelCollections=1 \
        --numInsertionWorkersPerCollection="$INSERTION_WORKERS" 2>&1; then
     echo "Stream complete for '$DB_NAME'"
     exit 0

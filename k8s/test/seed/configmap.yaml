@@ -187,3 +187,26 @@ data:
       ]);
       print("testdb" + n + " seeded: " + d.items.countDocuments() + " items, " + d.logs.countDocuments() + " logs");
     }
+
+    // ── Database 7: many collections — exercises parallel collection restore ─────
+    // With 6 collections and --parallel-collections=4, mongorestore will create
+    // multiple collections concurrently. This triggers a race condition in
+    // FerretDB/DocumentDB where the underlying PostgreSQL tables aren't ready
+    // before inserts begin (SQLSTATE 42P01: relation does not exist).
+
+    const db7 = db.getSiblingDB("testdb7");
+    db7.alpha.insertMany([{ k: "a1" }, { k: "a2" }]);
+    db7.bravo.insertMany([{ k: "b1" }, { k: "b2" }]);
+    db7.charlie.insertMany([{ k: "c1" }, { k: "c2" }]);
+    db7.delta.insertMany([{ k: "d1" }, { k: "d2" }]);
+    db7.echo.insertMany([{ k: "e1" }, { k: "e2" }]);
+    db7.foxtrot.insertMany([{ k: "f1" }, { k: "f2" }]);
+    print(
+      "testdb7 seeded (6 collections): "
+      + db7.alpha.countDocuments() + " alpha, "
+      + db7.bravo.countDocuments() + " bravo, "
+      + db7.charlie.countDocuments() + " charlie, "
+      + db7.delta.countDocuments() + " delta, "
+      + db7.echo.countDocuments() + " echo, "
+      + db7.foxtrot.countDocuments() + " foxtrot"
+    );

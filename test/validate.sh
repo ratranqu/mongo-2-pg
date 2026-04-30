@@ -28,11 +28,11 @@ echo "=== Checking PostgreSQL (DocumentDB catalog) ==="
 
 DB_LIST=$(psql "$PG_URI" -t -A -c "
   SELECT DISTINCT database_name FROM documentdb_api_catalog.collections
-  WHERE database_name IN ('testdb1', 'testdb2', 'testdb3', 'testdb4', 'testdb5', 'testdb6')
+  WHERE database_name IN ('testdb1', 'testdb2', 'testdb3', 'testdb4', 'testdb5', 'testdb6', 'testdb7')
   ORDER BY database_name;
 ")
 
-for _db in testdb1 testdb2 testdb3 testdb4 testdb5 testdb6; do
+for _db in testdb1 testdb2 testdb3 testdb4 testdb5 testdb6 testdb7; do
   if echo "$DB_LIST" | grep -q "$_db"; then
     pass "Database '$_db' exists in DocumentDB catalog"
   else
@@ -71,6 +71,12 @@ check_count testdb5 items 3
 check_count testdb5 logs  2
 check_count testdb6 items 3
 check_count testdb6 logs  2
+check_count testdb7 alpha   2
+check_count testdb7 bravo   2
+check_count testdb7 charlie 2
+check_count testdb7 delta   2
+check_count testdb7 echo    2
+check_count testdb7 foxtrot 2
 
 # ── 3. Spot-check document content ───────────────────────────────────────────
 echo ""
