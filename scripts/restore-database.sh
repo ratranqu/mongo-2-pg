@@ -22,7 +22,7 @@ echo "Restoring database '$DB_NAME' into FerretDB ..."
 
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   if mongorestore --uri="$FERRETDB_URI" --db="$DB_NAME" --dir="$DUMP_PATH" \
-       --numParallelCollections="$PARALLEL_COLLECTIONS" \
+       --drop --numParallelCollections="$PARALLEL_COLLECTIONS" \
        --numInsertionWorkersPerCollection="$INSERTION_WORKERS" --gzip 2>&1; then
     echo "Restore complete for '$DB_NAME'"
     exit 0
