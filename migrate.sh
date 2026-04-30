@@ -141,37 +141,76 @@ echo "=== Starting migration ==="
 echo "Dump directory: $DUMP_DIR"
 
 RESULT_DIR=$(mktemp -d -t mongo-results-XXXXXX)
+MIGRATION_START=$(date +%s)
+
+# Count source documents per database (in parallel)
+for db in "${DATABASES[@]}"; do
+  mongosh --quiet --norc "$SOURCE_MONGO" --eval "
+    let total = 0;
+    db.getSiblingDB('$db').getCollectionNames().forEach(c => {
+      total += db.getSiblingDB('$db').getCollection(c).countDocuments();
+    });
+    print(total);
+  " | tr -d '[:space:]' > "$RESULT_DIR/$db.doc_count" &
+done
+wait
 
 # Phase 1: Dump all databases in parallel
 echo ""
 echo "── Phase 1: Dumping databases ──"
 DUMP_PIDS=()
+DUMP_START=$(date +%s)
 for db in "${DATABASES[@]}"; do
-  "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR" &
+  (
+    _s=$(date +%s)
+    "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR"
+    _elapsed=$(( $(date +%s) - _s ))
+    echo "$_elapsed" > "$RESULT_DIR/$db.dump_time"
+    _bytes=$(du -sb "$DUMP_DIR/$db" 2>/dev/null | cut -f1)
+    echo "${_bytes:-0}" > "$RESULT_DIR/$db.dump_size"
+    _mb=$(awk "BEGIN { printf \"%.1f\", ${_bytes:-0} / 1048576 }")
+    _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo "?")
+    echo "  ✓ $db dumped: ${_mb} MB, ${_docs} docs in ${_elapsed}s"
+  ) &
   DUMP_PIDS+=($!)
 done
 
 for i in "${!DATABASES[@]}"; do
   if ! wait "${DUMP_PIDS[$i]}"; then
-    echo "ERROR: Dump failed for database '${DATABASES[$i]}'" >&2
+    echo "  ✗ ${DATABASES[$i]} dump FAILED" >&2
     touch "$RESULT_DIR/${DATABASES[$i]}.fail"
   fi
 done
+DUMP_END=$(date +%s)
+echo "  Dump phase: $((DUMP_END - DUMP_START))s (parallel)"
 
 # Phase 2: Restore databases sequentially (FerretDB cannot handle concurrent restores)
 echo ""
 echo "── Phase 2: Restoring databases ──"
+RESTORE_START=$(date +%s)
+_restore_n=0
 for db in "${DATABASES[@]}"; do
   [[ -f "$RESULT_DIR/$db.fail" ]] && continue
+  _restore_n=$((_restore_n + 1))
+  _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo "?")
+  _mb=$(awk "BEGIN { printf \"%.1f\", $(cat "$RESULT_DIR/$db.dump_size" 2>/dev/null || echo 0) / 1048576 }")
   echo ""
-  echo "── Restoring: $db ──"
+  echo "  [${_restore_n}/${#DATABASES[@]}] Restoring $db (${_mb} MB, ${_docs} docs) ..."
+  _s=$(date +%s)
   if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR"; then
     touch "$RESULT_DIR/$db.ok"
+    _elapsed=$(( $(date +%s) - _s ))
+    echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
+    echo "  ✓ $db restored in ${_elapsed}s"
   else
-    echo "ERROR: Restore failed for database '$db'" >&2
+    _elapsed=$(( $(date +%s) - _s ))
+    echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
+    echo "  ✗ $db restore FAILED after ${_elapsed}s" >&2
     touch "$RESULT_DIR/$db.fail"
   fi
 done
+RESTORE_END=$(date +%s)
+echo "  Restore phase: $((RESTORE_END - RESTORE_START))s (sequential)"
 
 MIGRATED=$(find "$RESULT_DIR" -name '*.ok' | wc -l)
 FAILED=$(find "$RESULT_DIR" -name '*.fail' | wc -l)
@@ -183,6 +222,37 @@ if [[ "$SKIP_VERIFY" == "false" ]]; then
   "$SCRIPT_DIR/scripts/verify-migration.sh" "$SOURCE_MONGO" "$FERRETDB" "${DATABASES[@]}"
 else
   echo "(Verification skipped)"
+fi
+
+# ── Statistics ────────────────────────────────────────────────────────────────
+MIGRATION_END=$(date +%s)
+echo ""
+echo "=== Migration Statistics ==="
+printf "%-32s %10s %10s %10s %12s\n" "Database" "Dump (MB)" "Documents" "Dump (s)" "Restore (s)"
+printf "%-32s %10s %10s %10s %12s\n" "--------------------------------" "----------" "----------" "----------" "------------"
+
+TOTAL_BYTES=0
+TOTAL_DOCS=0
+for db in "${DATABASES[@]}"; do
+  _bytes=$(cat "$RESULT_DIR/$db.dump_size" 2>/dev/null || echo 0)
+  _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo 0)
+  _dt=$(cat "$RESULT_DIR/$db.dump_time" 2>/dev/null || echo -)
+  _rt=$(cat "$RESULT_DIR/$db.restore_time" 2>/dev/null || echo -)
+  _mb=$(awk "BEGIN { printf \"%.1f\", $_bytes / 1048576 }")
+  printf "%-32s %10s %10s %10s %12s\n" "$db" "$_mb" "$_docs" "${_dt}s" "${_rt}s"
+  TOTAL_BYTES=$(( TOTAL_BYTES + _bytes ))
+  TOTAL_DOCS=$(( TOTAL_DOCS + _docs ))
+done
+
+TOTAL_MB=$(awk "BEGIN { printf \"%.1f\", $TOTAL_BYTES / 1048576 }")
+WALL_TIME=$(( MIGRATION_END - MIGRATION_START ))
+printf "%-32s %10s %10s %10s %12s\n" "--------------------------------" "----------" "----------" "----------" "------------"
+printf "%-32s %10s %10s %10s %12s\n" "TOTAL" "$TOTAL_MB" "$TOTAL_DOCS" "$((DUMP_END - DUMP_START))s" "$((RESTORE_END - RESTORE_START))s"
+
+echo ""
+echo "  Wall time:  ${WALL_TIME}s"
+if [[ $WALL_TIME -gt 0 ]]; then
+  echo "  Throughput: $(awk "BEGIN { printf \"%.1f\", $TOTAL_BYTES / 1048576 / $WALL_TIME }") MB/s, $(awk "BEGIN { printf \"%.0f\", $TOTAL_DOCS / $WALL_TIME }") docs/s"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
