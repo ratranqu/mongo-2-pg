@@ -164,42 +164,53 @@ for db in "${DATABASES[@]}"; do
   (
     _s=$(date +%s)
     "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR"
-    echo "$(( $(date +%s) - _s ))" > "$RESULT_DIR/$db.dump_time"
+    _elapsed=$(( $(date +%s) - _s ))
+    echo "$_elapsed" > "$RESULT_DIR/$db.dump_time"
+    _bytes=$(du -sb "$DUMP_DIR/$db" 2>/dev/null | cut -f1)
+    echo "${_bytes:-0}" > "$RESULT_DIR/$db.dump_size"
+    _mb=$(awk "BEGIN { printf \"%.1f\", ${_bytes:-0} / 1048576 }")
+    _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo "?")
+    echo "  ✓ $db dumped: ${_mb} MB, ${_docs} docs in ${_elapsed}s"
   ) &
   DUMP_PIDS+=($!)
 done
 
 for i in "${!DATABASES[@]}"; do
   if ! wait "${DUMP_PIDS[$i]}"; then
-    echo "ERROR: Dump failed for database '${DATABASES[$i]}'" >&2
+    echo "  ✗ ${DATABASES[$i]} dump FAILED" >&2
     touch "$RESULT_DIR/${DATABASES[$i]}.fail"
   fi
 done
 DUMP_END=$(date +%s)
-
-# Record dump sizes
-for db in "${DATABASES[@]}"; do
-  [[ -d "$DUMP_DIR/$db" ]] && du -sb "$DUMP_DIR/$db" | cut -f1 > "$RESULT_DIR/$db.dump_size"
-done
+echo "  Dump phase: $((DUMP_END - DUMP_START))s (parallel)"
 
 # Phase 2: Restore databases sequentially (FerretDB cannot handle concurrent restores)
 echo ""
 echo "── Phase 2: Restoring databases ──"
 RESTORE_START=$(date +%s)
+_restore_n=0
 for db in "${DATABASES[@]}"; do
   [[ -f "$RESULT_DIR/$db.fail" ]] && continue
+  _restore_n=$((_restore_n + 1))
+  _docs=$(cat "$RESULT_DIR/$db.doc_count" 2>/dev/null || echo "?")
+  _mb=$(awk "BEGIN { printf \"%.1f\", $(cat "$RESULT_DIR/$db.dump_size" 2>/dev/null || echo 0) / 1048576 }")
   echo ""
-  echo "── Restoring: $db ──"
+  echo "  [${_restore_n}/${#DATABASES[@]}] Restoring $db (${_mb} MB, ${_docs} docs) ..."
   _s=$(date +%s)
   if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR"; then
     touch "$RESULT_DIR/$db.ok"
+    _elapsed=$(( $(date +%s) - _s ))
+    echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
+    echo "  ✓ $db restored in ${_elapsed}s"
   else
-    echo "ERROR: Restore failed for database '$db'" >&2
+    _elapsed=$(( $(date +%s) - _s ))
+    echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
+    echo "  ✗ $db restore FAILED after ${_elapsed}s" >&2
     touch "$RESULT_DIR/$db.fail"
   fi
-  echo "$(( $(date +%s) - _s ))" > "$RESULT_DIR/$db.restore_time"
 done
 RESTORE_END=$(date +%s)
+echo "  Restore phase: $((RESTORE_END - RESTORE_START))s (sequential)"
 
 MIGRATED=$(find "$RESULT_DIR" -name '*.ok' | wc -l)
 FAILED=$(find "$RESULT_DIR" -name '*.fail' | wc -l)
