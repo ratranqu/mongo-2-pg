@@ -5,7 +5,8 @@
 #   migrate.sh --source-mongo <uri> --ferretdb <uri> [--target-postgres <uri>] [--databases <db1,db2,...>] [--skip-verify]
 #
 # The FerretDB instance must already be running and connected to the target PostgreSQL.
-# --target-postgres is informational/optional (used for direct PG verification if desired).
+# When --target-postgres is provided, the script ensures the database exists and has
+# the DocumentDB extension installed before starting the migration.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -47,12 +48,22 @@ done
 [[ -z "$FERRETDB" ]]     && { echo "ERROR: --ferretdb is required" >&2; usage; }
 
 # ── Check prerequisites ──────────────────────────────────────────────────────
-for cmd in mongosh mongodump mongorestore; do
+REQUIRED_CMDS=(mongosh mongodump mongorestore)
+[[ -n "$TARGET_POSTGRES" ]] && REQUIRED_CMDS+=(psql)
+
+for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "ERROR: '$cmd' is not installed or not on PATH." >&2
     exit 1
   fi
 done
+
+# ── Prepare target database ─────────────────────────────────────────────────
+if [[ -n "$TARGET_POSTGRES" ]]; then
+  echo "=== Preparing target PostgreSQL database ==="
+  "$SCRIPT_DIR/scripts/prepare-target-db.sh" "$TARGET_POSTGRES"
+  echo ""
+fi
 
 # ── List databases ────────────────────────────────────────────────────────────
 echo "=== Discovering databases on source MongoDB ==="
