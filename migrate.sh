@@ -10,6 +10,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DUMP_DIR=""
+RESULT_DIR=""
 SOURCE_MONGO=""
 FERRETDB=""
 TARGET_POSTGRES=""
@@ -26,6 +27,7 @@ cleanup() {
     echo "Cleaning up dump directory: $DUMP_DIR"
     rm -rf "$DUMP_DIR"
   fi
+  [[ -n "$RESULT_DIR" && -d "$RESULT_DIR" ]] && rm -rf "$RESULT_DIR"
 }
 trap cleanup EXIT
 
@@ -98,25 +100,38 @@ echo ""
 echo "=== Starting migration ==="
 echo "Dump directory: $DUMP_DIR"
 
-MIGRATED=0
-FAILED=0
+RESULT_DIR=$(mktemp -d -t mongo-results-XXXXXX)
 
-for db in "${DATABASES[@]}"; do
+migrate_db() {
+  local db="$1"
   echo ""
   echo "── Migrating: $db ──"
-
   if "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR"; then
     if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR"; then
-      MIGRATED=$((MIGRATED + 1))
+      touch "$RESULT_DIR/$db.ok"
+      return 0
     else
       echo "ERROR: Restore failed for database '$db'" >&2
-      FAILED=$((FAILED + 1))
     fi
   else
     echo "ERROR: Dump failed for database '$db'" >&2
-    FAILED=$((FAILED + 1))
   fi
+  touch "$RESULT_DIR/$db.fail"
+  return 1
+}
+
+PIDS=()
+for db in "${DATABASES[@]}"; do
+  migrate_db "$db" &
+  PIDS+=($!)
 done
+
+for pid in "${PIDS[@]}"; do
+  wait "$pid" || true
+done
+
+MIGRATED=$(find "$RESULT_DIR" -name '*.ok' | wc -l)
+FAILED=$(find "$RESULT_DIR" -name '*.fail' | wc -l)
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 echo ""

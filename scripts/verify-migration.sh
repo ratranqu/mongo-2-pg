@@ -21,32 +21,46 @@ else
 fi
 
 ERRORS=0
+VERIFY_TMP=$(mktemp -d -t mongo-verify-XXXXXX)
+trap 'rm -rf "$VERIFY_TMP"' EXIT
 
 for db in "${DATABASES[@]}"; do
-  echo "--- Verifying database: $db ---"
-
-  # Get collections from source
   COLLECTIONS=$(mongosh --quiet --norc "$SOURCE_URI" --eval "
     db.getSiblingDB('$db').getCollectionNames().forEach(c => print(c));
   ")
 
   if [[ -z "$COLLECTIONS" ]]; then
+    echo "--- Verifying database: $db ---"
     echo "  (no collections)"
     continue
   fi
 
+  echo "$COLLECTIONS" > "$VERIFY_TMP/${db}.colls"
+
   while IFS= read -r coll; do
     [[ -z "$coll" ]] && continue
-    SRC_COUNT=$(mongosh --quiet --norc "$SOURCE_URI" --eval "
-      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
-    ")
-    DST_COUNT=$(mongosh --quiet --norc "$FERRETDB_URI" --eval "
-      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
-    ")
 
-    # Trim whitespace
-    SRC_COUNT=$(echo "$SRC_COUNT" | tr -d '[:space:]')
-    DST_COUNT=$(echo "$DST_COUNT" | tr -d '[:space:]')
+    mongosh --quiet --norc "$SOURCE_URI" --eval "
+      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
+    " | tr -d '[:space:]' > "$VERIFY_TMP/${db}.${coll}.src" &
+
+    mongosh --quiet --norc "$FERRETDB_URI" --eval "
+      print(db.getSiblingDB('$db').getCollection('$coll').countDocuments());
+    " | tr -d '[:space:]' > "$VERIFY_TMP/${db}.${coll}.dst" &
+
+  done <<< "$COLLECTIONS"
+done
+
+wait
+
+for db in "${DATABASES[@]}"; do
+  echo "--- Verifying database: $db ---"
+  [[ ! -f "$VERIFY_TMP/${db}.colls" ]] && continue
+
+  while IFS= read -r coll; do
+    [[ -z "$coll" ]] && continue
+    SRC_COUNT=$(<"$VERIFY_TMP/${db}.${coll}.src")
+    DST_COUNT=$(<"$VERIFY_TMP/${db}.${coll}.dst")
 
     if [[ "$SRC_COUNT" == "$DST_COUNT" ]]; then
       echo "  $db.$coll: OK ($SRC_COUNT documents)"
@@ -54,7 +68,7 @@ for db in "${DATABASES[@]}"; do
       echo "  $db.$coll: MISMATCH — source=$SRC_COUNT, target=$DST_COUNT" >&2
       ERRORS=$((ERRORS + 1))
     fi
-  done <<< "$COLLECTIONS"
+  done < "$VERIFY_TMP/${db}.colls"
 done
 
 echo ""

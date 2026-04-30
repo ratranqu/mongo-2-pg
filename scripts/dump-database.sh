@@ -8,5 +8,6 @@ DB_NAME="${2:?Missing db-name}"
 OUTPUT_DIR="${3:?Missing output-dir}"
 
 echo "Dumping database '$DB_NAME' ..."
-mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --out="$OUTPUT_DIR" --quiet
+mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --out="$OUTPUT_DIR" \
+  --numParallelCollections=4 --gzip --quiet
 echo "Dump complete: $OUTPUT_DIR/$DB_NAME"
