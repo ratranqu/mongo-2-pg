@@ -142,32 +142,35 @@ echo "Dump directory: $DUMP_DIR"
 
 RESULT_DIR=$(mktemp -d -t mongo-results-XXXXXX)
 
-migrate_db() {
-  local db="$1"
-  echo ""
-  echo "── Migrating: $db ──"
-  if "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR"; then
-    if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR"; then
-      touch "$RESULT_DIR/$db.ok"
-      return 0
-    else
-      echo "ERROR: Restore failed for database '$db'" >&2
-    fi
-  else
-    echo "ERROR: Dump failed for database '$db'" >&2
-  fi
-  touch "$RESULT_DIR/$db.fail"
-  return 1
-}
-
-PIDS=()
+# Phase 1: Dump all databases in parallel
+echo ""
+echo "── Phase 1: Dumping databases ──"
+DUMP_PIDS=()
 for db in "${DATABASES[@]}"; do
-  migrate_db "$db" &
-  PIDS+=($!)
+  "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR" &
+  DUMP_PIDS+=($!)
 done
 
-for pid in "${PIDS[@]}"; do
-  wait "$pid" || true
+for i in "${!DATABASES[@]}"; do
+  if ! wait "${DUMP_PIDS[$i]}"; then
+    echo "ERROR: Dump failed for database '${DATABASES[$i]}'" >&2
+    touch "$RESULT_DIR/${DATABASES[$i]}.fail"
+  fi
+done
+
+# Phase 2: Restore databases sequentially (FerretDB cannot handle concurrent restores)
+echo ""
+echo "── Phase 2: Restoring databases ──"
+for db in "${DATABASES[@]}"; do
+  [[ -f "$RESULT_DIR/$db.fail" ]] && continue
+  echo ""
+  echo "── Restoring: $db ──"
+  if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR"; then
+    touch "$RESULT_DIR/$db.ok"
+  else
+    echo "ERROR: Restore failed for database '$db'" >&2
+    touch "$RESULT_DIR/$db.fail"
+  fi
 done
 
 MIGRATED=$(find "$RESULT_DIR" -name '*.ok' | wc -l)
