@@ -24,8 +24,10 @@ echo "Restoring database '$DB_NAME' into FerretDB ..."
 mongosh --quiet --norc "$FERRETDB_URI" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()" 2>/dev/null || true
 
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+  # FerretDB/DocumentDB races when creating multiple collections in parallel,
+  # so always restore one collection at a time (numParallelCollections=1).
   if mongorestore --uri="$FERRETDB_URI" --db="$DB_NAME" --dir="$DUMP_PATH" \
-       --numParallelCollections="$PARALLEL_COLLECTIONS" \
+       --numParallelCollections=1 \
        --numInsertionWorkersPerCollection="$INSERTION_WORKERS" --gzip 2>&1; then
     echo "Restore complete for '$DB_NAME'"
     exit 0

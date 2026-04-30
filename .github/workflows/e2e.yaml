@@ -50,13 +50,37 @@ jobs:
           kubectl version --client
           kubectl get nodes
 
-      - name: Pre-pull images into kind
+      - name: Cache Docker images
+        id: docker-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-images.tar
+          key: docker-images-ferretdb2.7.0-docdb0.107.0-mongo7-pg17
+
+      - name: Load or pull Docker images
         run: |
-          # Pre-pull images to avoid timeout issues
+          IMAGES=(
+            "ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0"
+            "postgres:17"
+            "mongo:7"
+            "ghcr.io/ferretdb/ferretdb:2.7.0"
+          )
+
+          if [[ "${{ steps.docker-cache.outputs.cache-hit }}" == "true" ]]; then
+            echo "Loading images from cache ..."
+            docker load -i /tmp/docker-images.tar
+          else
+            echo "Pulling images ..."
+            for img in "${IMAGES[@]}"; do
+              echo "  Pulling $img ..."
+              docker pull "$img"
+            done
+            echo "Saving images to cache ..."
+            docker save "${IMAGES[@]}" -o /tmp/docker-images.tar
+          fi
+
           echo "Loading images into kind cluster ..."
-          for img in "ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0" postgres:17 mongo:7 "ghcr.io/ferretdb/ferretdb:2.7.0"; do
-            echo "  Pulling $img ..."
-            docker pull "$img"
+          for img in "${IMAGES[@]}"; do
             kind load docker-image "$img" --name mongo2pg-test
           done
           echo "All images loaded."
