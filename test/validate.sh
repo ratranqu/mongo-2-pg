@@ -28,21 +28,17 @@ echo "=== Checking PostgreSQL (DocumentDB catalog) ==="
 
 DB_LIST=$(psql "$PG_URI" -t -A -c "
   SELECT DISTINCT database_name FROM documentdb_api_catalog.collections
-  WHERE database_name IN ('testdb1', 'testdb2')
+  WHERE database_name IN ('testdb1', 'testdb2', 'testdb3', 'testdb4', 'testdb5', 'testdb6')
   ORDER BY database_name;
 ")
 
-if echo "$DB_LIST" | grep -q "testdb1"; then
-  pass "Database 'testdb1' exists in DocumentDB catalog"
-else
-  fail "Database 'testdb1' not found in DocumentDB catalog"
-fi
-
-if echo "$DB_LIST" | grep -q "testdb2"; then
-  pass "Database 'testdb2' exists in DocumentDB catalog"
-else
-  fail "Database 'testdb2' not found in DocumentDB catalog"
-fi
+for _db in testdb1 testdb2 testdb3 testdb4 testdb5 testdb6; do
+  if echo "$DB_LIST" | grep -q "$_db"; then
+    pass "Database '$_db' exists in DocumentDB catalog"
+  else
+    fail "Database '$_db' not found in DocumentDB catalog"
+  fi
+done
 
 # ── 2. Check document counts via FerretDB ─────────────────────────────────────
 echo ""
@@ -67,6 +63,14 @@ check_count testdb1 orders   2
 check_count testdb1 matrices 2
 check_count testdb2 products   4
 check_count testdb2 categories 2
+check_count testdb3 items 3
+check_count testdb3 logs  2
+check_count testdb4 items 3
+check_count testdb4 logs  2
+check_count testdb5 items 3
+check_count testdb5 logs  2
+check_count testdb6 items 3
+check_count testdb6 logs  2
 
 # ── 3. Spot-check document content ───────────────────────────────────────────
 echo ""

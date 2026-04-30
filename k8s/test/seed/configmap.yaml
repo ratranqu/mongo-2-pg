@@ -171,3 +171,19 @@ data:
     ]);
 
     print("testdb2 seeded: " + db2.products.countDocuments() + " products, " + db2.categories.countDocuments() + " categories");
+
+    // ── Databases 3-6: exercise concurrent dump / sequential restore ────────────
+
+    for (const n of [3, 4, 5, 6]) {
+      const d = db.getSiblingDB("testdb" + n);
+      d.items.insertMany([
+        { name: "item-" + n + "-a", value: n * 10 },
+        { name: "item-" + n + "-b", value: n * 20 },
+        { name: "item-" + n + "-c", value: n * 30 },
+      ]);
+      d.logs.insertMany([
+        { ts: new Date(), level: "info",  msg: "db" + n + " started" },
+        { ts: new Date(), level: "debug", msg: "db" + n + " ready" },
+      ]);
+      print("testdb" + n + " seeded: " + d.items.countDocuments() + " items, " + d.logs.countDocuments() + " logs");
+    }
