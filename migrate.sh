@@ -12,6 +12,10 @@
 # Options:
 #   --target-postgres <uri>    Ensure this PG database exists with DocumentDB extension
 #   --target-db <dbname>       Same, but read credentials from ferretdb-postgres k8s secret
+#   --admin-postgres <uri>     Optional superuser-equivalent URI used to CREATE
+#                              EXTENSION and GRANT documentdb_admin_role to the
+#                              target user. Required when --target-postgres /
+#                              --target-db credentials are not a superuser.
 #   --namespace <ns>           Kubernetes namespace for --target-db secret lookup
 #   --databases <db1,db2,...>  Only migrate these databases
 #   --stream                   Pipe mongodump directly to mongorestore (no temp disk)
@@ -36,6 +40,7 @@ MONGO_TARGET=""
 TARGET_IS_MONGO=false
 TARGET_POSTGRES=""
 TARGET_DB=""
+ADMIN_POSTGRES=""
 NAMESPACE=""
 ONLY_DATABASES=""
 STREAM=false
@@ -46,7 +51,7 @@ SKIP_VERIFY=false
 CLEAN_TARGET=false
 
 usage() {
-  echo "Usage: $0 --source-mongo <uri> (--ferretdb <uri> | --mongo <uri>) [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--clean-target] [--skip-verify]"
+  echo "Usage: $0 --source-mongo <uri> (--ferretdb <uri> | --mongo <uri>) [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--admin-postgres <uri>] [--databases <db1,db2,...>] [--clean-target] [--skip-verify]"
   exit 1
 }
 
@@ -67,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --mongo)         MONGO_TARGET="$2";   shift 2 ;;
     --target-postgres) TARGET_POSTGRES="$2"; shift 2 ;;
     --target-db)     TARGET_DB="$2";       shift 2 ;;
+    --admin-postgres) ADMIN_POSTGRES="$2"; shift 2 ;;
     --namespace)     NAMESPACE="$2";       shift 2 ;;
     --databases)     ONLY_DATABASES="$2";  shift 2 ;;
     --stream)        STREAM=true;         shift ;;
@@ -98,8 +104,12 @@ if [[ -n "$TARGET_DB" && -n "$TARGET_POSTGRES" ]]; then
   echo "ERROR: --target-db and --target-postgres are mutually exclusive" >&2
   usage
 fi
-if [[ "$TARGET_IS_MONGO" == "true" && ( -n "$TARGET_POSTGRES" || -n "$TARGET_DB" || "$CLEAN_TARGET" == "true" ) ]]; then
-  echo "ERROR: --target-postgres, --target-db, and --clean-target only apply to FerretDB targets" >&2
+if [[ "$TARGET_IS_MONGO" == "true" && ( -n "$TARGET_POSTGRES" || -n "$TARGET_DB" || -n "$ADMIN_POSTGRES" || "$CLEAN_TARGET" == "true" ) ]]; then
+  echo "ERROR: --target-postgres, --target-db, --admin-postgres, and --clean-target only apply to FerretDB targets" >&2
+  usage
+fi
+if [[ -n "$ADMIN_POSTGRES" && -z "$TARGET_POSTGRES" && -z "$TARGET_DB" ]]; then
+  echo "ERROR: --admin-postgres requires --target-postgres or --target-db" >&2
   usage
 fi
 
@@ -136,7 +146,11 @@ fi
 # ── Prepare target database ─────────────────────────────────────────────────
 if [[ -n "$TARGET_POSTGRES" ]]; then
   echo "=== Preparing target PostgreSQL database ==="
-  "$SCRIPT_DIR/scripts/prepare-target-db.sh" "$TARGET_POSTGRES"
+  if [[ -n "$ADMIN_POSTGRES" ]]; then
+    "$SCRIPT_DIR/scripts/prepare-target-db.sh" "$TARGET_POSTGRES" "$ADMIN_POSTGRES"
+  else
+    "$SCRIPT_DIR/scripts/prepare-target-db.sh" "$TARGET_POSTGRES"
+  fi
   echo ""
 fi
 
