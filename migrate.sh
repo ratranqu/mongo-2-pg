@@ -461,6 +461,38 @@ if [[ $WALL_TIME -gt 0 ]]; then
   fi
 fi
 
+if [[ "$STREAM" != "true" ]]; then
+  TOTAL_DUMP_TIME=0
+  TOTAL_RESTORE_TIME=0
+  for db in "${DATABASES[@]}"; do
+    _dt=$(cat "$RESULT_DIR/$db.dump_time" 2>/dev/null || echo 0)
+    _rt=$(cat "$RESULT_DIR/$db.restore_time" 2>/dev/null || echo 0)
+    [[ "$_dt" =~ ^[0-9]+$ ]] && TOTAL_DUMP_TIME=$(( TOTAL_DUMP_TIME + _dt ))
+    [[ "$_rt" =~ ^[0-9]+$ ]] && TOTAL_RESTORE_TIME=$(( TOTAL_RESTORE_TIME + _rt ))
+  done
+  TOTAL_TASK_TIME=$(( TOTAL_DUMP_TIME + TOTAL_RESTORE_TIME ))
+  OVERHEAD_TIME=$(( WALL_TIME > TOTAL_TASK_TIME ? WALL_TIME - TOTAL_TASK_TIME : 0 ))
+
+  echo ""
+  echo "=== Time Breakdown ==="
+  if [[ $TOTAL_TASK_TIME -gt 0 ]]; then
+    _dump_pct=$(awk "BEGIN { printf \"%.0f\", $TOTAL_DUMP_TIME * 100 / $TOTAL_TASK_TIME }")
+    _restore_pct=$(awk "BEGIN { printf \"%.0f\", $TOTAL_RESTORE_TIME * 100 / $TOTAL_TASK_TIME }")
+  else
+    _dump_pct=0; _restore_pct=0
+  fi
+  printf "  %-28s %6ss  (%s%%)\n" "Reading from source (dump):" "$TOTAL_DUMP_TIME" "$_dump_pct"
+  printf "  %-28s %6ss  (%s%%)\n" "Writing to target (restore):" "$TOTAL_RESTORE_TIME" "$_restore_pct"
+  printf "  %-28s %6ss\n" "Overhead (verify, cleanup):" "$OVERHEAD_TIME"
+  printf "  %-28s %6ss\n" "Wall time:" "$WALL_TIME"
+
+  if [[ $TOTAL_RESTORE_TIME -gt 0 && $TOTAL_DUMP_TIME -gt 0 ]]; then
+    _ratio=$(awk "BEGIN { printf \"%.1f\", $TOTAL_RESTORE_TIME / $TOTAL_DUMP_TIME }")
+    echo ""
+    echo "  Restore is ${_ratio}x slower than dump — the target is the bottleneck."
+  fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Migration Summary ==="
