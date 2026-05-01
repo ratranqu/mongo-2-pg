@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Ensure the target PostgreSQL database exists, has the DocumentDB extension,
-# and that the application user has the documentdb_admin_role.
+# Ensure the target PostgreSQL database exists, has the DocumentDB extension
+# installed, and that the application user holds enough privileges on the
+# extension's schemas/tables/sequences to create and operate collections.
 #
 # Usage: prepare-target-db.sh <postgres-uri> [admin-postgres-uri]
 #   postgres-uri        URI FerretDB will connect with (the application user)
 #   admin-postgres-uri  Optional URI with superuser-equivalent privileges, used
-#                       for CREATE DATABASE, CREATE EXTENSION, and GRANT
-#                       documentdb_admin_role. Required when the application
-#                       user is not a superuser. Defaults to <postgres-uri>.
+#                       for CREATE DATABASE, CREATE EXTENSION, and the explicit
+#                       GRANTs on the extension schemas. Required when the
+#                       application user is not a superuser. Defaults to
+#                       <postgres-uri>.
 set -euo pipefail
 
 PG_URI="${1:?Usage: prepare-target-db.sh <postgres-uri> [admin-postgres-uri]}"
@@ -39,11 +41,56 @@ echo "Ensuring DocumentDB extension is installed in '$DB_NAME' ..."
 psql "$ADMIN_DB_URI" -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"
 echo "  DocumentDB extension ready in '$DB_NAME'"
 
-# Grant documentdb_admin_role when an admin URI is supplied and the app user
-# differs from the admin user — covers the common FerretDB-v2 setup where the
-# extension is owned by 'postgres' and FerretDB connects as a separate role.
+# Grant the privileges FerretDB v2 actually needs on the DocumentDB extension.
+# documentdb_admin_role exists in some builds but doesn't reliably bundle DML
+# on documentdb_api_catalog.* (manifests as `permission denied for table
+# collections` when createCollection runs), so issue the explicit grants
+# instead. All statements are idempotent.
 if [[ -n "$APP_USER" && "$ADMIN_URI" != "$PG_URI" ]]; then
-  echo "Granting documentdb_admin_role to '$APP_USER' ..."
-  psql "$ADMIN_DB_URI" -c "GRANT documentdb_admin_role TO \"${APP_USER}\";"
-  echo "  Role granted"
+  echo "Granting DocumentDB privileges to '$APP_USER' ..."
+  psql "$ADMIN_DB_URI" -v ON_ERROR_STOP=1 -v "app_user=$APP_USER" <<'SQL'
+GRANT USAGE ON SCHEMA documentdb_api,
+                     documentdb_api_catalog,
+                     documentdb_api_internal,
+                     documentdb_core
+  TO :"app_user";
+
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA documentdb_api,
+                                          documentdb_api_catalog,
+                                          documentdb_api_internal,
+                                          documentdb_core
+  TO :"app_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA documentdb_api,
+                                    documentdb_api_catalog,
+                                    documentdb_api_internal,
+                                    documentdb_core
+  GRANT EXECUTE ON FUNCTIONS TO :"app_user";
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON ALL TABLES IN SCHEMA documentdb_api,
+                          documentdb_api_catalog,
+                          documentdb_api_internal,
+                          documentdb_core
+  TO :"app_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA documentdb_api,
+                                    documentdb_api_catalog,
+                                    documentdb_api_internal,
+                                    documentdb_core
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
+
+GRANT USAGE, SELECT
+  ON ALL SEQUENCES IN SCHEMA documentdb_api,
+                              documentdb_api_catalog,
+                              documentdb_api_internal,
+                              documentdb_core
+  TO :"app_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA documentdb_api,
+                                    documentdb_api_catalog,
+                                    documentdb_api_internal,
+                                    documentdb_core
+  GRANT USAGE, SELECT ON SEQUENCES TO :"app_user";
+SQL
+  psql "$ADMIN_DB_URI" -v ON_ERROR_STOP=1 \
+    -c "GRANT CREATE ON DATABASE \"${DB_NAME}\" TO \"${APP_USER}\";"
+  echo "  Privileges granted"
 fi
