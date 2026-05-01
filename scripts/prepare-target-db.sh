@@ -44,51 +44,31 @@ echo "  DocumentDB extension ready in '$DB_NAME'"
 # Grant the privileges FerretDB v2 actually needs on the DocumentDB extension.
 # documentdb_admin_role exists in some builds but doesn't reliably bundle DML
 # on documentdb_api_catalog.* (manifests as `permission denied for table
-# collections` when createCollection runs), so issue the explicit grants
-# instead. All statements are idempotent.
+# collections` when createCollection runs), and the set of schemas the
+# extension creates varies by version (api/api_catalog/api_internal/core/data,
+# plus possibly more), so iterate over every documentdb_* schema dynamically
+# and grant the full set on each. All statements are idempotent.
 if [[ -n "$APP_USER" && "$ADMIN_URI" != "$PG_URI" ]]; then
   echo "Granting DocumentDB privileges to '$APP_USER' ..."
   psql "$ADMIN_DB_URI" -v ON_ERROR_STOP=1 -v "app_user=$APP_USER" <<'SQL'
-GRANT USAGE ON SCHEMA documentdb_api,
-                     documentdb_api_catalog,
-                     documentdb_api_internal,
-                     documentdb_core
-  TO :"app_user";
-
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA documentdb_api,
-                                          documentdb_api_catalog,
-                                          documentdb_api_internal,
-                                          documentdb_core
-  TO :"app_user";
-ALTER DEFAULT PRIVILEGES IN SCHEMA documentdb_api,
-                                    documentdb_api_catalog,
-                                    documentdb_api_internal,
-                                    documentdb_core
-  GRANT EXECUTE ON FUNCTIONS TO :"app_user";
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-  ON ALL TABLES IN SCHEMA documentdb_api,
-                          documentdb_api_catalog,
-                          documentdb_api_internal,
-                          documentdb_core
-  TO :"app_user";
-ALTER DEFAULT PRIVILEGES IN SCHEMA documentdb_api,
-                                    documentdb_api_catalog,
-                                    documentdb_api_internal,
-                                    documentdb_core
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
-
-GRANT USAGE, SELECT
-  ON ALL SEQUENCES IN SCHEMA documentdb_api,
-                              documentdb_api_catalog,
-                              documentdb_api_internal,
-                              documentdb_core
-  TO :"app_user";
-ALTER DEFAULT PRIVILEGES IN SCHEMA documentdb_api,
-                                    documentdb_api_catalog,
-                                    documentdb_api_internal,
-                                    documentdb_core
-  GRANT USAGE, SELECT ON SEQUENCES TO :"app_user";
+DO $$
+DECLARE
+  v_user TEXT := :'app_user';
+  s TEXT;
+BEGIN
+  FOR s IN
+    SELECT nspname FROM pg_namespace WHERE nspname LIKE 'documentdb%'
+  LOOP
+    EXECUTE format('GRANT USAGE, CREATE ON SCHEMA %I TO %I', s, v_user);
+    EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO %I', s, v_user);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I', s, v_user);
+    EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I', s, v_user);
+    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT EXECUTE ON FUNCTIONS TO %I', s, v_user);
+    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', s, v_user);
+    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO %I', s, v_user);
+    RAISE NOTICE 'Granted DocumentDB privileges on schema % to %', s, v_user;
+  END LOOP;
+END $$;
 SQL
   psql "$ADMIN_DB_URI" -v ON_ERROR_STOP=1 \
     -c "GRANT CREATE ON DATABASE \"${DB_NAME}\" TO \"${APP_USER}\";"
