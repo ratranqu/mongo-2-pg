@@ -29,6 +29,9 @@
 #   --insertion-workers <n>    Insertion workers per collection during restore (default: 4)
 #   --clean-target             Purge stale DocumentDB catalog entries before migrating
 #   --skip-verify              Skip post-migration verification
+#   --progress-interval <sec>  Poll target every N seconds and print
+#                              percentage/throughput/ETA per database (default: 30,
+#                              0 disables)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -49,9 +52,10 @@ PARALLEL_COLLECTIONS=4
 INSERTION_WORKERS=4
 SKIP_VERIFY=false
 CLEAN_TARGET=false
+PROGRESS_INTERVAL=30
 
 usage() {
-  echo "Usage: $0 --source-mongo <uri> (--ferretdb <uri> | --mongo <uri>) [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--admin-postgres <uri>] [--databases <db1,db2,...>] [--clean-target] [--skip-verify]"
+  echo "Usage: $0 --source-mongo <uri> (--ferretdb <uri> | --mongo <uri>) [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--admin-postgres <uri>] [--databases <db1,db2,...>] [--clean-target] [--skip-verify] [--progress-interval <sec>]"
   exit 1
 }
 
@@ -81,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --insertion-workers)    INSERTION_WORKERS="$2";     shift 2 ;;
     --clean-target)  CLEAN_TARGET=true;   shift ;;
     --skip-verify)   SKIP_VERIFY=true;    shift ;;
+    --progress-interval) PROGRESS_INTERVAL="$2"; shift 2 ;;
     *)               usage ;;
   esac
 done
@@ -249,22 +254,58 @@ fi
 
 MIGRATION_START=$(date +%s)
 
-# Count source documents per database (single mongosh call)
+# Count source documents and uncompressed bytes per database (single mongosh call)
 mongosh --quiet --norc "$SOURCE_MONGO" --eval "
   const dbs = [$(printf "'%s'," "${DATABASES[@]}" | sed 's/,$//')]
   dbs.forEach(dbName => {
     const d = db.getSiblingDB(dbName);
-    let total = 0;
+    let docs = 0, bytes = 0;
     d.getCollectionNames().forEach(c => {
-      total += d.getCollection(c).estimatedDocumentCount();
+      const coll = d.getCollection(c);
+      try {
+        const s = coll.stats();
+        docs  += (s.count || 0);
+        bytes += (s.size  || 0);
+      } catch (e) {
+        docs += coll.estimatedDocumentCount();
+      }
     });
-    print(dbName + '\t' + total);
+    print(dbName + '\t' + docs + '\t' + bytes);
   });
-" | while IFS=$'\t' read -r _db _count; do
-  [[ -n "$_db" ]] && echo "$_count" > "$RESULT_DIR/$_db.doc_count"
+" | while IFS=$'\t' read -r _db _count _bytes; do
+  [[ -n "$_db" ]] || continue
+  echo "$_count"          > "$RESULT_DIR/$_db.doc_count"
+  echo "${_bytes:-0}"     > "$RESULT_DIR/$_db.source_size"
 done
 
 # ── Run migration (stream or dump+restore) ───────────────────────────────────
+
+# Run "$@" with a backgrounded progress watcher polling the target for $db.
+# Watcher is silently skipped when PROGRESS_INTERVAL <= 0 or doc count is 0.
+_with_progress() {
+  local db="$1"; shift
+  local _docs _bytes _wpid=""
+
+  if (( PROGRESS_INTERVAL > 0 )); then
+    _docs=$(cat "$RESULT_DIR/$db.doc_count"   2>/dev/null || echo 0)
+    _bytes=$(cat "$RESULT_DIR/$db.source_size" 2>/dev/null || echo 0)
+    if [[ "$_docs" =~ ^[0-9]+$ ]] && (( _docs > 0 )); then
+      "$SCRIPT_DIR/scripts/progress-watcher.sh" \
+        "$FERRETDB" "$db" "$_docs" "$_bytes" "$PROGRESS_INTERVAL" &
+      _wpid=$!
+    fi
+  fi
+
+  "$@"
+  local _rc=$?
+
+  if [[ -n "$_wpid" ]]; then
+    kill "$_wpid" 2>/dev/null || true
+    wait "$_wpid" 2>/dev/null || true
+  fi
+
+  return $_rc
+}
 
 _migrate_one() {
   local db="$1" _s _elapsed _docs
@@ -273,7 +314,8 @@ _migrate_one() {
   if [[ "$STREAM" == "true" ]]; then
     echo "  → $db ($_docs docs): streaming ..."
     _s=$(date +%s)
-    if "$SCRIPT_DIR/scripts/stream-database.sh" "$SOURCE_MONGO" "$FERRETDB" "$db" \
+    if _with_progress "$db" \
+         "$SCRIPT_DIR/scripts/stream-database.sh" "$SOURCE_MONGO" "$FERRETDB" "$db" \
          "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "$_elapsed" > "$RESULT_DIR/$db.migrate_time"
@@ -306,7 +348,8 @@ _migrate_one() {
     # Restore
     echo "  → $db: restoring ..."
     _s=$(date +%s)
-    if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR" \
+    if _with_progress "$db" \
+         "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR" \
          "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
