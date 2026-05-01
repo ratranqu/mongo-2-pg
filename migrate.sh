@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Migrate all non-system databases from a MongoDB server to PostgreSQL via FerretDB.
+# Migrate all non-system databases from a MongoDB server to either PostgreSQL via FerretDB
+# or another MongoDB server.
 #
 # Usage:
-#   migrate.sh --source-mongo <uri> --ferretdb <uri> [options]
+#   migrate.sh --source-mongo <uri> (--ferretdb <uri> | --mongo <uri>) [options]
 #
-# The FerretDB instance must already be running and connected to the target PostgreSQL.
+# When using --ferretdb, the FerretDB instance must already be running and connected to
+# the target PostgreSQL. When using --mongo, the target is a real MongoDB server, so
+# --parallel-collections is honored on restore (FerretDB requires it pinned to 1).
 #
 # Options:
 #   --target-postgres <uri>    Ensure this PG database exists with DocumentDB extension
@@ -13,7 +16,8 @@
 #   --databases <db1,db2,...>  Only migrate these databases
 #   --stream                   Pipe mongodump directly to mongorestore (no temp disk)
 #   --max-concurrent <n>       Max databases to migrate concurrently (default: 1, or 2 with --stream)
-#   --parallel-collections <n> Collections to dump/restore in parallel per DB (default: 4)
+#   --parallel-collections <n> Collections to dump/restore in parallel per DB (default: 4).
+#                              On restore, only honored when --mongo is used (FerretDB pins to 1).
 #   --insertion-workers <n>    Insertion workers per collection during restore (default: 4)
 #   --clean-target             Purge stale DocumentDB catalog entries before migrating
 #   --skip-verify              Skip post-migration verification
@@ -24,6 +28,8 @@ DUMP_DIR=""
 RESULT_DIR=""
 SOURCE_MONGO=""
 FERRETDB=""
+MONGO_TARGET=""
+TARGET_IS_MONGO=false
 TARGET_POSTGRES=""
 TARGET_DB=""
 NAMESPACE=""
@@ -36,7 +42,7 @@ SKIP_VERIFY=false
 CLEAN_TARGET=false
 
 usage() {
-  echo "Usage: $0 --source-mongo <uri> --ferretdb <uri> [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--clean-target] [--skip-verify]"
+  echo "Usage: $0 --source-mongo <uri> (--ferretdb <uri> | --mongo <uri>) [--stream] [--max-concurrent <n>] [--parallel-collections <n>] [--insertion-workers <n>] [--target-postgres <uri> | --target-db <dbname> [--namespace <ns>]] [--databases <db1,db2,...>] [--clean-target] [--skip-verify]"
   exit 1
 }
 
@@ -54,6 +60,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --source-mongo)  SOURCE_MONGO="$2";   shift 2 ;;
     --ferretdb)      FERRETDB="$2";       shift 2 ;;
+    --mongo)         MONGO_TARGET="$2";   shift 2 ;;
     --target-postgres) TARGET_POSTGRES="$2"; shift 2 ;;
     --target-db)     TARGET_DB="$2";       shift 2 ;;
     --namespace)     NAMESPACE="$2";       shift 2 ;;
@@ -69,10 +76,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$SOURCE_MONGO" ]] && { echo "ERROR: --source-mongo is required" >&2; usage; }
-[[ -z "$FERRETDB" ]]     && { echo "ERROR: --ferretdb is required" >&2; usage; }
+
+if [[ -n "$FERRETDB" && -n "$MONGO_TARGET" ]]; then
+  echo "ERROR: --ferretdb and --mongo are mutually exclusive" >&2
+  usage
+fi
+if [[ -z "$FERRETDB" && -z "$MONGO_TARGET" ]]; then
+  echo "ERROR: one of --ferretdb or --mongo is required" >&2
+  usage
+fi
+if [[ -n "$MONGO_TARGET" ]]; then
+  FERRETDB="$MONGO_TARGET"
+  TARGET_IS_MONGO=true
+fi
 
 if [[ -n "$TARGET_DB" && -n "$TARGET_POSTGRES" ]]; then
   echo "ERROR: --target-db and --target-postgres are mutually exclusive" >&2
+  usage
+fi
+if [[ "$TARGET_IS_MONGO" == "true" && ( -n "$TARGET_POSTGRES" || -n "$TARGET_DB" || "$CLEAN_TARGET" == "true" ) ]]; then
+  echo "ERROR: --target-postgres, --target-db, and --clean-target only apply to FerretDB targets" >&2
   usage
 fi
 
@@ -189,7 +212,16 @@ else
   DUMP_DIR=$(mktemp -d -t mongo-dump-XXXXXX)
   echo "Mode: dump+restore (temp dir: $DUMP_DIR)"
 fi
-echo "Concurrency: $MAX_CONCURRENT database(s), $PARALLEL_COLLECTIONS parallel collections, $INSERTION_WORKERS insertion workers"
+# FerretDB/DocumentDB races when creating multiple collections in parallel, so the
+# restore side is pinned to 1 unless the target is real MongoDB.
+if [[ "$TARGET_IS_MONGO" == "true" ]]; then
+  RESTORE_PARALLEL_COLLECTIONS="$PARALLEL_COLLECTIONS"
+else
+  RESTORE_PARALLEL_COLLECTIONS=1
+fi
+
+echo "Target: $([[ "$TARGET_IS_MONGO" == "true" ]] && echo MongoDB || echo FerretDB)"
+echo "Concurrency: $MAX_CONCURRENT database(s), $PARALLEL_COLLECTIONS parallel collections (restore: $RESTORE_PARALLEL_COLLECTIONS), $INSERTION_WORKERS insertion workers"
 
 MIGRATION_START=$(date +%s)
 
@@ -218,7 +250,7 @@ _migrate_one() {
     echo "  → $db ($_docs docs): streaming ..."
     _s=$(date +%s)
     if "$SCRIPT_DIR/scripts/stream-database.sh" "$SOURCE_MONGO" "$FERRETDB" "$db" \
-         "$PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
+         "$PARALLEL_COLLECTIONS" "$INSERTION_WORKERS" "$RESTORE_PARALLEL_COLLECTIONS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "$_elapsed" > "$RESULT_DIR/$db.migrate_time"
       echo "  ✓ $db streamed in ${_elapsed}s"
@@ -251,7 +283,7 @@ _migrate_one() {
     echo "  → $db: restoring ..."
     _s=$(date +%s)
     if "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR" \
-         "$PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
+         "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
       echo "  ✓ $db restored in ${_elapsed}s"
@@ -374,5 +406,9 @@ if [[ $FAILED -gt 0 ]]; then
 fi
 
 echo ""
-echo "Migration complete. Existing MongoDB clients can now connect to FerretDB at:"
+if [[ "$TARGET_IS_MONGO" == "true" ]]; then
+  echo "Migration complete. Existing MongoDB clients can now connect to MongoDB at:"
+else
+  echo "Migration complete. Existing MongoDB clients can now connect to FerretDB at:"
+fi
 echo "  $FERRETDB"
