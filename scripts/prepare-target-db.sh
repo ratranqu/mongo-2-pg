@@ -84,25 +84,22 @@ echo "  DocumentDB extension ready in '$DB_NAME'"
 # and grant the full set on each. All statements are idempotent.
 if [[ -n "$APP_USER" && "$ADMIN_URI" != "$PG_URI" ]]; then
   echo "Granting DocumentDB privileges to '$APP_USER' ..."
+  # psql's :'var' substitution does NOT happen inside dollar-quoted blocks
+  # ($$ ... $$), so we generate per-schema GRANT statements with format()
+  # at the top level and feed them to \gexec. format(%I) handles identifier
+  # quoting for both the schema name and the (possibly hyphenated) role.
   psql "$ADMIN_DB_URI" -v ON_ERROR_STOP=1 -v "app_user=$APP_USER" <<'SQL'
-DO $$
-DECLARE
-  v_user TEXT := :'app_user';
-  s TEXT;
-BEGIN
-  FOR s IN
-    SELECT nspname FROM pg_namespace WHERE nspname LIKE 'documentdb%'
-  LOOP
-    EXECUTE format('GRANT USAGE, CREATE ON SCHEMA %I TO %I', s, v_user);
-    EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO %I', s, v_user);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I', s, v_user);
-    EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I', s, v_user);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT EXECUTE ON FUNCTIONS TO %I', s, v_user);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', s, v_user);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO %I', s, v_user);
-    RAISE NOTICE 'Granted DocumentDB privileges on schema % to %', s, v_user;
-  END LOOP;
-END $$;
+WITH s(nspname) AS (
+  SELECT nspname FROM pg_namespace WHERE nspname LIKE 'documentdb%'
+)
+SELECT format('GRANT USAGE, CREATE ON SCHEMA %I TO %I', nspname, :'app_user') FROM s
+UNION ALL SELECT format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO %I', nspname, :'app_user') FROM s
+UNION ALL SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I', nspname, :'app_user') FROM s
+UNION ALL SELECT format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I', nspname, :'app_user') FROM s
+UNION ALL SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT EXECUTE ON FUNCTIONS TO %I', nspname, :'app_user') FROM s
+UNION ALL SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', nspname, :'app_user') FROM s
+UNION ALL SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO %I', nspname, :'app_user') FROM s
+\gexec
 SQL
   psql "$ADMIN_DB_URI" -v ON_ERROR_STOP=1 \
     -c "GRANT CREATE ON DATABASE \"${DB_NAME}\" TO \"${APP_USER}\";"
