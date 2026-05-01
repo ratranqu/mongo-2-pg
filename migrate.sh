@@ -18,6 +18,10 @@
 #   --max-concurrent <n>       Max databases to migrate concurrently (default: 1, or 2 with --stream)
 #   --parallel-collections <n> Collections to dump/restore in parallel per DB (default: 4).
 #                              On restore, only honored when --mongo is used (FerretDB pins to 1).
+#                              In --stream mode, dump and restore are coupled (mongorestore
+#                              inherits parallelism from the archive), so the value used is
+#                              the restore-side one (1 against FerretDB, --parallel-collections
+#                              against --mongo).
 #   --insertion-workers <n>    Insertion workers per collection during restore (default: 4)
 #   --clean-target             Purge stale DocumentDB catalog entries before migrating
 #   --skip-verify              Skip post-migration verification
@@ -221,7 +225,13 @@ else
 fi
 
 echo "Target: $([[ "$TARGET_IS_MONGO" == "true" ]] && echo MongoDB || echo FerretDB)"
-echo "Concurrency: $MAX_CONCURRENT database(s), $PARALLEL_COLLECTIONS parallel collections (restore: $RESTORE_PARALLEL_COLLECTIONS), $INSERTION_WORKERS insertion workers"
+if [[ "$STREAM" == "true" ]]; then
+  # mongorestore inherits parallel-collections from the archive, so dump and
+  # restore must use the same value in stream mode.
+  echo "Concurrency: $MAX_CONCURRENT database(s), $RESTORE_PARALLEL_COLLECTIONS parallel collections (dump+restore coupled in stream mode), $INSERTION_WORKERS insertion workers"
+else
+  echo "Concurrency: $MAX_CONCURRENT database(s), $PARALLEL_COLLECTIONS dump / $RESTORE_PARALLEL_COLLECTIONS restore parallel collections, $INSERTION_WORKERS insertion workers"
+fi
 
 MIGRATION_START=$(date +%s)
 
@@ -250,7 +260,7 @@ _migrate_one() {
     echo "  → $db ($_docs docs): streaming ..."
     _s=$(date +%s)
     if "$SCRIPT_DIR/scripts/stream-database.sh" "$SOURCE_MONGO" "$FERRETDB" "$db" \
-         "$PARALLEL_COLLECTIONS" "$INSERTION_WORKERS" "$RESTORE_PARALLEL_COLLECTIONS"; then
+         "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "$_elapsed" > "$RESULT_DIR/$db.migrate_time"
       echo "  ✓ $db streamed in ${_elapsed}s"

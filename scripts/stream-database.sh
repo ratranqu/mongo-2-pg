@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Stream a single database from MongoDB to a target (FerretDB or MongoDB) via
 # mongodump --archive | mongorestore --archive. Eliminates temp disk usage.
-# The caller decides restore-parallel-collections: pass 1 for FerretDB (it races
-# on parallel collection creation) or any value for real MongoDB.
-# Usage: stream-database.sh <source-uri> <target-uri> <db-name> [parallel-collections] [insertion-workers] [restore-parallel-collections]
+#
+# In stream mode dump and restore parallelism are coupled: mongorestore inherits
+# the parallel collection count from the archive and silently ignores its own
+# --numParallelCollections flag, so the dump must be produced at the rate the
+# target can consume. Callers should pass 1 for FerretDB (it races on parallel
+# collection creation) and any higher value only when the target is real MongoDB.
+#
+# Usage: stream-database.sh <source-uri> <target-uri> <db-name> [parallel-collections] [insertion-workers]
 set -euo pipefail
 
-SOURCE_URI="${1:?Usage: stream-database.sh <source-uri> <target-uri> <db-name> [parallel-collections] [insertion-workers] [restore-parallel-collections]}"
+SOURCE_URI="${1:?Usage: stream-database.sh <source-uri> <target-uri> <db-name> [parallel-collections] [insertion-workers]}"
 TARGET_URI="${2:?Missing target-uri}"
 DB_NAME="${3:?Missing db-name}"
-PARALLEL_COLLECTIONS="${4:-4}"
+PARALLEL_COLLECTIONS="${4:-1}"
 INSERTION_WORKERS="${5:-4}"
-RESTORE_PARALLEL_COLLECTIONS="${6:-1}"
 
 MAX_RETRIES=3
 RETRY_DELAY=5
@@ -35,7 +39,7 @@ for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   if mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --archive --gzip \
        --numParallelCollections="$PARALLEL_COLLECTIONS" --quiet 2>&1 | \
      mongorestore --uri="$TARGET_URI" --archive --gzip --db="$DB_NAME" \
-       --numParallelCollections="$RESTORE_PARALLEL_COLLECTIONS" \
+       --numParallelCollections="$PARALLEL_COLLECTIONS" \
        --numInsertionWorkersPerCollection="$INSERTION_WORKERS" 2>&1; then
     echo "Stream complete for '$DB_NAME'"
     exit 0
