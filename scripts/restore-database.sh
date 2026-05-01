@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Restore a single database dump into FerretDB (which writes to PostgreSQL).
-# Usage: restore-database.sh <ferretdb-uri> <db-name> <dump-dir> [parallel-collections] [insertion-workers]
+# Restore a single database dump into FerretDB (which writes to PostgreSQL) or a
+# real MongoDB server. The caller decides parallel-collections: pass 1 for FerretDB
+# (it races on parallel collection creation) or any value for real MongoDB.
+# Usage: restore-database.sh <target-uri> <db-name> <dump-dir> [parallel-collections] [insertion-workers]
 set -euo pipefail
 
-FERRETDB_URI="${1:?Usage: restore-database.sh <ferretdb-uri> <db-name> <dump-dir> [parallel-collections] [insertion-workers]}"
+TARGET_URI="${1:?Usage: restore-database.sh <target-uri> <db-name> <dump-dir> [parallel-collections] [insertion-workers]}"
 DB_NAME="${2:?Missing db-name}"
 DUMP_DIR="${3:?Missing dump-dir}"
-PARALLEL_COLLECTIONS="${4:-4}"
+PARALLEL_COLLECTIONS="${4:-1}"
 INSERTION_WORKERS="${5:-4}"
 
 MAX_RETRIES=3
@@ -18,13 +20,13 @@ if [[ ! -d "$DUMP_PATH" ]]; then
   exit 1
 fi
 
-echo "Restoring database '$DB_NAME' into FerretDB ..."
+echo "Restoring database '$DB_NAME' ..."
 
 # FerretDB/DocumentDB's dropDatabase() doesn't always clean up catalog entries,
 # leaving stale metadata that points to non-existent PostgreSQL tables.
 # Drop every collection individually first, then drop the database.
 drop_database() {
-  mongosh --quiet --norc "$FERRETDB_URI" --eval "
+  mongosh --quiet --norc "$TARGET_URI" --eval "
     const d = db.getSiblingDB('$DB_NAME');
     d.getCollectionNames().forEach(c => { d.getCollection(c).drop(); });
     d.dropDatabase();
@@ -34,10 +36,8 @@ drop_database() {
 drop_database
 
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
-  # FerretDB/DocumentDB races when creating multiple collections in parallel,
-  # so always restore one collection at a time (numParallelCollections=1).
-  if mongorestore --uri="$FERRETDB_URI" --db="$DB_NAME" --dir="$DUMP_PATH" \
-       --numParallelCollections=1 \
+  if mongorestore --uri="$TARGET_URI" --db="$DB_NAME" --dir="$DUMP_PATH" \
+       --numParallelCollections="$PARALLEL_COLLECTIONS" \
        --numInsertionWorkersPerCollection="$INSERTION_WORKERS" --gzip 2>&1; then
     echo "Restore complete for '$DB_NAME'"
     exit 0
