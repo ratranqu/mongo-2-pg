@@ -58,7 +58,7 @@ drop_target
 
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
   if [[ ${#NS_ARGS[@]} -gt 0 ]]; then
-    if mongorestore --uri="$TARGET_URI" --dir="$DUMP_PATH" \
+    if mongorestore --uri="$TARGET_URI" --dir="$DUMP_DIR" \
          "${NS_ARGS[@]}" \
          --numParallelCollections="$PARALLEL_COLLECTIONS" \
          --numInsertionWorkersPerCollection="$INSERTION_WORKERS" --gzip 2>&1; then
