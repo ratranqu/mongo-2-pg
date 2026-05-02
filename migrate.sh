@@ -18,6 +18,7 @@
 #                              --target-db credentials are not a superuser.
 #   --namespace <ns>           Kubernetes namespace for --target-db secret lookup
 #   --databases <db1,db2,...>  Only migrate these databases
+#   --collections <c1,c2,...>  Only migrate these collections (requires exactly one --databases)
 #   --stream                   Pipe mongodump directly to mongorestore (no temp disk)
 #   --max-concurrent <n>       Max databases to migrate concurrently (default: 1, or 2 with --stream)
 #   --parallel-collections <n> Collections to dump/restore in parallel per DB (default: 4).
@@ -46,6 +47,7 @@ TARGET_DB=""
 ADMIN_POSTGRES=""
 NAMESPACE=""
 ONLY_DATABASES=""
+ONLY_COLLECTIONS=""
 STREAM=false
 MAX_CONCURRENT=""
 PARALLEL_COLLECTIONS=4
@@ -79,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --admin-postgres) ADMIN_POSTGRES="$2"; shift 2 ;;
     --namespace)     NAMESPACE="$2";       shift 2 ;;
     --databases)     ONLY_DATABASES="$2";  shift 2 ;;
+    --collections)   ONLY_COLLECTIONS="$2"; shift 2 ;;
     --stream)        STREAM=true;         shift ;;
     --max-concurrent) MAX_CONCURRENT="$2"; shift 2 ;;
     --parallel-collections) PARALLEL_COLLECTIONS="$2"; shift 2 ;;
@@ -116,6 +119,17 @@ fi
 if [[ -n "$ADMIN_POSTGRES" && -z "$TARGET_POSTGRES" && -z "$TARGET_DB" ]]; then
   echo "ERROR: --admin-postgres requires --target-postgres or --target-db" >&2
   usage
+fi
+if [[ -n "$ONLY_COLLECTIONS" && -z "$ONLY_DATABASES" ]]; then
+  echo "ERROR: --collections requires --databases with exactly one database" >&2
+  usage
+fi
+if [[ -n "$ONLY_COLLECTIONS" ]]; then
+  IFS=',' read -ra _check_dbs <<< "$ONLY_DATABASES"
+  if [[ ${#_check_dbs[@]} -ne 1 ]]; then
+    echo "ERROR: --collections requires exactly one database in --databases" >&2
+    usage
+  fi
 fi
 
 [[ -z "$MAX_CONCURRENT" ]] && { [[ "$STREAM" == "true" ]] && MAX_CONCURRENT=2 || MAX_CONCURRENT=1; }
@@ -316,7 +330,7 @@ _migrate_one() {
     _s=$(date +%s)
     if _with_progress "$db" \
          "$SCRIPT_DIR/scripts/stream-database.sh" "$SOURCE_MONGO" "$FERRETDB" "$db" \
-         "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
+         "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS" "$ONLY_COLLECTIONS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "$_elapsed" > "$RESULT_DIR/$db.migrate_time"
       echo "  ✓ $db streamed in ${_elapsed}s"
@@ -332,7 +346,7 @@ _migrate_one() {
     echo "  → $db ($_docs docs): dumping ..."
     _s=$(date +%s)
     if ! "$SCRIPT_DIR/scripts/dump-database.sh" "$SOURCE_MONGO" "$db" "$DUMP_DIR" \
-           "$PARALLEL_COLLECTIONS"; then
+           "$PARALLEL_COLLECTIONS" "$ONLY_COLLECTIONS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "  ✗ $db dump FAILED after ${_elapsed}s" >&2
       touch "$RESULT_DIR/$db.fail"
@@ -350,7 +364,7 @@ _migrate_one() {
     _s=$(date +%s)
     if _with_progress "$db" \
          "$SCRIPT_DIR/scripts/restore-database.sh" "$FERRETDB" "$db" "$DUMP_DIR" \
-         "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS"; then
+         "$RESTORE_PARALLEL_COLLECTIONS" "$INSERTION_WORKERS" "$ONLY_COLLECTIONS"; then
       _elapsed=$(( $(date +%s) - _s ))
       echo "$_elapsed" > "$RESULT_DIR/$db.restore_time"
       echo "  ✓ $db restored in ${_elapsed}s"

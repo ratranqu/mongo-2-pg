@@ -139,6 +139,56 @@ echo "=== Validating results ==="
   "postgresql://ferretdb:ferretdb@localhost:25432/postgres" \
   "mongodb://ferretdb:ferretdb@localhost:27217"
 
+# ── 7. Test --collections: re-migrate a single collection without affecting others
+echo ""
+echo "=== Testing --collections flag ==="
+
+FERRETDB_URI="mongodb://ferretdb:ferretdb@localhost:27217"
+
+# Record current doc count for a collection we will NOT re-migrate
+ORDERS_BEFORE=$(mongosh --quiet --norc "$FERRETDB_URI" --eval \
+  "print(db.getSiblingDB('testdb1').orders.countDocuments())" | tr -d '[:space:]')
+echo "  testdb1.orders before: $ORDERS_BEFORE documents"
+
+# Drop testdb1.users on the target to simulate a failed collection
+mongosh --quiet --norc "$FERRETDB_URI" --eval \
+  "db.getSiblingDB('testdb1').users.drop()"
+echo "  Dropped testdb1.users on target"
+
+USERS_AFTER_DROP=$(mongosh --quiet --norc "$FERRETDB_URI" --eval \
+  "print(db.getSiblingDB('testdb1').users.countDocuments())" | tr -d '[:space:]')
+echo "  testdb1.users after drop: $USERS_AFTER_DROP documents"
+
+# Re-migrate only testdb1.users
+"$PROJECT_DIR/migrate.sh" \
+  --source-mongo "mongodb://localhost:27117" \
+  --ferretdb "$FERRETDB_URI" \
+  --databases testdb1 \
+  --collections users \
+  --skip-verify
+
+# Verify users was restored
+USERS_RESTORED=$(mongosh --quiet --norc "$FERRETDB_URI" --eval \
+  "print(db.getSiblingDB('testdb1').users.countDocuments())" | tr -d '[:space:]')
+echo "  testdb1.users after re-migrate: $USERS_RESTORED documents"
+
+if [[ "$USERS_RESTORED" != "3" ]]; then
+  echo "FAIL: testdb1.users expected 3 documents, got $USERS_RESTORED" >&2
+  exit 1
+fi
+echo "  PASS: testdb1.users restored correctly"
+
+# Verify orders was NOT affected
+ORDERS_AFTER=$(mongosh --quiet --norc "$FERRETDB_URI" --eval \
+  "print(db.getSiblingDB('testdb1').orders.countDocuments())" | tr -d '[:space:]')
+echo "  testdb1.orders after re-migrate: $ORDERS_AFTER documents"
+
+if [[ "$ORDERS_AFTER" != "$ORDERS_BEFORE" ]]; then
+  echo "FAIL: testdb1.orders was affected by --collections migration ($ORDERS_BEFORE → $ORDERS_AFTER)" >&2
+  exit 1
+fi
+echo "  PASS: testdb1.orders was not affected"
+
 echo ""
 echo "============================================"
 echo "  END-TO-END TEST PASSED"
