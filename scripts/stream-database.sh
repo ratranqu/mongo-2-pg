@@ -21,14 +21,9 @@ COLLECTIONS="${6:-}"
 MAX_RETRIES=3
 RETRY_DELAY=5
 
-# Build --nsInclude args for targeted dump/restore
-DUMP_NS_ARGS=()
 COLL_LIST=()
 if [[ -n "$COLLECTIONS" ]]; then
   IFS=',' read -ra COLL_LIST <<< "$COLLECTIONS"
-  for c in "${COLL_LIST[@]}"; do
-    DUMP_NS_ARGS+=(--nsInclude="${DB_NAME}.${c}")
-  done
   echo "Streaming ${#COLL_LIST[@]} collection(s) from '$DB_NAME' (source → target) ..."
 else
   echo "Streaming database '$DB_NAME' (source → target) ..."
@@ -54,27 +49,46 @@ drop_target() {
   fi
 }
 
+_stream_one_collection() {
+  local coll="$1"
+  local _retry_delay=$RETRY_DELAY
+  for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+    if mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --collection="$coll" --archive --gzip --quiet 2>&1 | \
+       mongorestore --uri="$TARGET_URI" --archive --gzip --nsInclude="${DB_NAME}.${coll}" \
+         --numParallelCollections=1 \
+         --numInsertionWorkersPerCollection="$INSERTION_WORKERS" 2>&1; then
+      return 0
+    fi
+    if [[ $attempt -lt $MAX_RETRIES ]]; then
+      echo "WARNING: Stream attempt $attempt/$MAX_RETRIES failed for '$DB_NAME.$coll', retrying in ${_retry_delay}s ..." >&2
+      sleep "$_retry_delay"
+      _retry_delay=$((_retry_delay * 2))
+    fi
+  done
+  return 1
+}
+
 drop_target
 
+if [[ ${#COLL_LIST[@]} -gt 0 ]]; then
+  for c in "${COLL_LIST[@]}"; do
+    if ! _stream_one_collection "$c"; then
+      echo "ERROR: Stream failed for '$DB_NAME.$c' after $MAX_RETRIES attempts" >&2
+      exit 1
+    fi
+  done
+  echo "Stream complete for '$DB_NAME' (${#COLL_LIST[@]} collection(s))"
+  exit 0
+fi
+
 for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
-  if [[ ${#DUMP_NS_ARGS[@]} -gt 0 ]]; then
-    if mongodump --uri="$SOURCE_URI" "${DUMP_NS_ARGS[@]}" --archive --gzip \
-         --numParallelCollections="$PARALLEL_COLLECTIONS" --quiet 2>&1 | \
-       mongorestore --uri="$TARGET_URI" --archive --gzip \
-         --numParallelCollections="$PARALLEL_COLLECTIONS" \
-         --numInsertionWorkersPerCollection="$INSERTION_WORKERS" 2>&1; then
-      echo "Stream complete for '$DB_NAME' (${#COLL_LIST[@]} collection(s))"
-      exit 0
-    fi
-  else
-    if mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --archive --gzip \
-         --numParallelCollections="$PARALLEL_COLLECTIONS" --quiet 2>&1 | \
-       mongorestore --uri="$TARGET_URI" --archive --gzip --db="$DB_NAME" \
-         --numParallelCollections="$PARALLEL_COLLECTIONS" \
-         --numInsertionWorkersPerCollection="$INSERTION_WORKERS" 2>&1; then
-      echo "Stream complete for '$DB_NAME'"
-      exit 0
-    fi
+  if mongodump --uri="$SOURCE_URI" --db="$DB_NAME" --archive --gzip \
+       --numParallelCollections="$PARALLEL_COLLECTIONS" --quiet 2>&1 | \
+     mongorestore --uri="$TARGET_URI" --archive --gzip --db="$DB_NAME" \
+       --numParallelCollections="$PARALLEL_COLLECTIONS" \
+       --numInsertionWorkersPerCollection="$INSERTION_WORKERS" 2>&1; then
+    echo "Stream complete for '$DB_NAME'"
+    exit 0
   fi
 
   if [[ $attempt -lt $MAX_RETRIES ]]; then
